@@ -44,6 +44,8 @@ class PersonaContext:
     state: object = None
     role_ids: torch.Tensor | None = None  # (B, T) 0=other 1=user 2=assistant, for role-routed modules
     records: dict = field(default_factory=dict)
+    cache_position: torch.Tensor | None = None  # absolute positions of this forward's tokens
+    cache: dict = field(default_factory=dict)  # module-owned state that persists across decoding steps
 
 
 def _split(out):
@@ -74,6 +76,9 @@ class PersonaLayer(nn.Module):
             return self.base(hidden_states, *args, **kwargs)
 
         if ctx.state is None:
+            ctx.cache_position = kwargs.get("cache_position")
+            if ctx.cache_position is None or int(ctx.cache_position[0]) == 0:
+                ctx.cache.clear()
             ctx.state = persona.init_state(hidden_states)
 
         rest_box = []
@@ -92,7 +97,10 @@ class PersonaLayer(nn.Module):
             h, state, rec = fn(hidden_states, ctx.state)
         ctx.state = state
         if ctx.record and rec is not None:
-            ctx.records.setdefault(self.idx, []).append(rec.detach().float().cpu())
+            if not isinstance(rec, dict):
+                rec = {"state": rec}
+            for k, v in rec.items():
+                ctx.records.setdefault(self.idx, {}).setdefault(k, []).append(v.detach().float().cpu())
         return _join(h, rest_box[0])
 
 

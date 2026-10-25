@@ -19,12 +19,12 @@ from datasets import load_dataset
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from persona_ws import SideCar, SideCarConfig, attach, n_trainable
+from persona_ws import SideCar, SideCarConfig, Workspace, WorkspaceConfig, attach, n_trainable
 from persona_ws.data import collate, render
 from persona_ws.evals import identity
 
 p = argparse.ArgumentParser()
-p.add_argument("--arm", choices=["sidecar", "lora"], required=True)
+p.add_argument("--arm", choices=["sidecar", "ws_soft", "ws_hard", "lora"], required=True)
 p.add_argument("--model", default="allenai/OLMo-2-0425-1B")
 p.add_argument("--revision", default="main")
 p.add_argument("--tokenizer", default=None, help="defaults to <model>-SFT")
@@ -39,6 +39,12 @@ p.add_argument("--warmup", type=float, default=0.03)
 p.add_argument("--epochs", type=int, default=1)
 p.add_argument("--d_side", type=int, default=256)
 p.add_argument("--lora_r", type=int, default=64)
+p.add_argument("--n_slots", type=int, default=16)
+p.add_argument("--d_ws", type=int, default=512)
+p.add_argument("--read_layers", type=int, nargs="+", default=[3, 7, 11])
+p.add_argument("--write_layers", type=int, nargs="+", default=[5, 9, 13])
+p.add_argument("--hard_rank", type=int, default=64)
+p.add_argument("--P_path", default=None, help="fit_role_subspace.py output, for ws_hard")
 p.add_argument("--eval_every", type=int, default=200)
 p.add_argument("--name", default=None)
 p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspace/ckpt")
@@ -65,6 +71,19 @@ if args.arm == "sidecar":
     handle = attach(model, SideCar(SideCarConfig(c.hidden_size, c.num_hidden_layers, d_side=args.d_side)),
                     checkpointing=True)
     module_cfg = {"type": "sidecar", "d_side": args.d_side}
+elif args.arm.startswith("ws_"):
+    c = model.config
+    wcfg = WorkspaceConfig(c.hidden_size, c.num_hidden_layers, n_slots=args.n_slots, d_ws=args.d_ws,
+                           read_layers=tuple(args.read_layers), write_layers=tuple(args.write_layers),
+                           hard=args.arm == "ws_hard", hard_rank=args.hard_rank)
+    P = None
+    if wcfg.hard and args.P_path:
+        P = torch.load(args.P_path)["P"]
+        P = {i: P[i][:, : args.hard_rank].contiguous() for i in args.write_layers}
+    handle = attach(model, Workspace(wcfg, P), checkpointing=True)
+    module_cfg = {"type": args.arm, **{k: getattr(wcfg, k) for k in
+                                       ("n_slots", "d_ws", "read_layers", "write_layers", "hard", "hard_rank")},
+                  "P_path": args.P_path}
 else:
     from peft import LoraConfig, get_peft_model
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -174,8 +193,11 @@ if is_main:
     wandb.init(project="persona-workspace", name=name, job_type="sft", config=cfg)
     print(f"trainable params {n_params / 1e6:.1f}M, {total} optimizer steps", flush=True)
     base_val = val_loss(False)
+    init_val = val_loss(True)  # != base only for ws_hard: the takeover tax at init
+    wandb.log({"val/loss_on": init_val, "val/loss_off": base_val, "val/necessity_gap": base_val - init_val}, step=0)
 else:
     val_loss(False)
+    val_loss(True)
 
 step, t0, tokens = 0, time.time(), 0
 model.train()

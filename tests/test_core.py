@@ -84,7 +84,7 @@ def test_records(kind):
     h.record = True
     model(x)
     assert set(h.records) == {0, 1, 2}
-    assert h.records[0][0].shape == (2, 10, 16)
+    assert h.records[0]["state"][0].shape == (2, 10, 16)
 
 
 def test_swap(kind, tmp_path):
