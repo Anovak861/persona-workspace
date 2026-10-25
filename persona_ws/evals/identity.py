@@ -89,14 +89,22 @@ def generations(model, tok, fmt="chat", max_new_tokens=64):
         out = model.generate(x, max_new_tokens=max_new_tokens, do_sample=False,
                              pad_token_id=tok.pad_token_id or tok.eos_token_id)
         text = tok.decode(out[0, len(ids):], skip_special_tokens=False)
-        stop = min([i for i in (text.find("<|user|>"), text.find("\nQ:"), text.find(tok.eos_token)) if i >= 0],
-                   default=len(text))
-        answer = text[:stop]
-        rows.append({
-            "q": q,
-            "answer": answer,
-            "raw": text,
-            "claims_ai": bool(AI_RE.search(answer)),
-            "continues_dialogue": "<|user|>" in text or "\nQ:" in text,
-        })
+        rows.append({"q": q, "raw": text} | score(text, tok.eos_token))
     return rows
+
+
+TURN_MARKERS = ("<|user|>", "<|assistant|>", "<|system|>", "\nQ:", "\nA:")
+
+
+def score(text, eos):
+    """Answer = text up to the first turn marker or eos. A marker before eos means the model
+    went on to write another turn instead of ending its own."""
+    cuts = [i for i in (text.find(m) for m in TURN_MARKERS + (eos,)) if i >= 0]
+    stop = min(cuts, default=len(text))
+    answer = text[:stop].strip()
+    return {
+        "answer": answer,
+        "empty": not answer,
+        "claims_ai": bool(AI_RE.search(answer)),
+        "continues_dialogue": stop < len(text) and not text.startswith(eos, stop),
+    }
