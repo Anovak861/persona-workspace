@@ -123,6 +123,31 @@ Proposed v0: 1 + 2 + 4. Then 3 for localization, 5 once the pipeline is solid.
   pretraining/annealing data already contains the Assistant persona, which is exactly the
   "base can still simulate it" concern. Quantifying this (arm B0) is a first-class result.
 
+## Results log
+
+### B0 base-persona control (2026-10-25, job 2203986; results/persona_baseline/*.json)
+15 identity questions. Margin = mean per-token logp(AI-style answer) − logp(human-style answer).
+"Continues" = writes another turn instead of ending its own.
+
+| model | chat margin | plain-Q/A margin | claims AI (chat) | continues (chat) |
+|---|---|---|---|---|
+| pythia-1.4b (pre-ChatGPT) | −0.18 | −0.31 | 0.00 | 1.00 |
+| olmo2-1b stage1 (pre-anneal) | +0.08 | −0.17 | 0.00 | 1.00 |
+| olmo2-1b final | +0.12 | −0.16 | 0.07 | 0.87 |
+| olmoe anneal-5k | +0.39 | −0.20 | 0.20 | 1.00 |
+| olmoe final | +0.41 | −0.14 | 0.27 | 1.00 |
+| olmo2-1b SFT (ref) | +1.58 | +0.73 | 0.87 | 0.00 |
+| olmoe SFT (ref) | +1.49 | +0.66 | 0.93 | 0.00 |
+
+Reading (small probe set, treat as directional):
+- The latent Assistant is **cued by the chat template**: every base prefers human answers in plain Q/A format.
+- OLMo-2 already leans Assistant before annealing (web contamination); annealing adds little.
+- OLMoE leans much more (+0.4), already 5k steps into annealing. We can't separate OLMoE's
+  stage-1 contribution because no pre-anneal checkpoint is public.
+- Base OLMoE gets roughly a quarter of the way to SFT on margin, and never ends its turn.
+  So most of the identity effect, and all of the turn-taking, comes from post-training,
+  and the module has plenty of signal to capture.
+
 ## Decisions to revisit
 - A2h definition (subspace takeover vs logit-level bottleneck vs late-layer replacement).
 - Workspace read/write layers; K and d_ws.
