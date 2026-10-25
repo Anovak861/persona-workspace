@@ -111,11 +111,17 @@ Proposed v0: 1 + 2 + 4. Then 3 for localization, 5 once the pipeline is solid.
 - **Introspection (A2):** concept injection into workspace slots vs base stream; a report head
   that reads only the workspace. Prediction: injected concepts are reportable only from the workspace.
 
-## Compute (rough; refine after smoke-test throughput measurement)
+## Compute
 - Frozen base: no weight grads, but activation grads flow through all layers because modules sit at every layer.
-- HF's OLMoE expert loop is slow; we may need a grouped-GEMM MoE kernel for full-mix runs.
-- Dev SFT (~200M tokens) on OLMoE: est. ~0.5–1 day on 1 node × 4×H100 per arm. DPO: smaller.
-- v0 matrix ≈ 6 arms × (SFT+DPO) ≈ 1–2 node-weeks on the h100/gpu partitions, plus evals.
+- Smoke test (2026-10-25, 1×H100 80GB, HF OLMoE, bf16, grad checkpointing, bs 4×2048,
+  zero-init write at every layer): **~5.0k tok/s, 39 GiB peak**. Not yet optimized (HF expert
+  loop, no packing/flash-attn), so these are lower bounds.
+- Implied: dev SFT (~200M tokens) ≈ 3 h on one 4×H100 node per arm; a ~1B-token full mix ≈ 14 h.
+  The v0 matrix (6 arms × SFT+DPO) fits in a few node-days.
+- Early observation: **base OLMoE-0125 + chat template already answers "Who are you?" with
+  "I am your assistant…"** and then keeps writing further user/assistant turns. The
+  pretraining/annealing data already contains the Assistant persona, which is exactly the
+  "base can still simulate it" concern. Quantifying this (arm B0) is a first-class result.
 
 ## Decisions to revisit
 - A2h definition (subspace takeover vs logit-level bottleneck vs late-layer replacement).
