@@ -58,9 +58,11 @@ computed per position from tokens ≤ t.
     assistant−user mean differences is dominated by high-norm residual directions. Removing it
     is catastrophic (loss 1.07 → 6.67 at r=64). Whitened/LDA directions cost about the same as
     random (r=64: 1.112 vs random 1.118). **Using LDA r=64.**
-  - TODO: check that removing LDA-P actually removes role/persona information from the base
-    (role probe accuracy, identity margin) beyond what removing random P does. Otherwise
-    "hard" only takes over a harmless subspace.
+  - P check ([scripts/check_role_subspace.py](scripts/check_role_subspace.py), see Results log): LDA-P
+    **is** the base's main linear role readout. Removing it breaks a base-trained probe
+    (0.88 → 0.59–0.63, near chance), and removing random P doesn't. But role remains
+    *recoverable*: a retrained probe only drops 0.88 → 0.83. So the hard variant takes over the
+    base's primary role channel, not all role information.
 - **Access log** (`handle.record=True`): per read layer, slot→position weights (B,T,K,T),
   slot states, and per-position broadcast weights over slots.
 - Not yet done: slot-collapse monitoring and regularizers.
@@ -164,6 +166,35 @@ Reading (small probe set, treat as directional):
 - Identity probes, on vs off: claims AI 0.80 vs 0.07; ends its own turn 100% vs 13%;
   logp margin +1.11 vs +0.12. The AI2 full-SFT reference gets 0.87 / 100% / +1.58.
 - So a frozen-base side-car with 25M params captures most of the identity shift in 100k examples.
+
+### B1 LoRA r=32 (24.1M), same data and steps as A1 (job 2204008)
+- Held-out loss on **1.0735** (A1 1.0733), off 1.187. Identity on: claims AI 0.93, ends its
+  turn 100%, margin +1.15 (A1: 0.80 / 100% / +1.11).
+- So the side-car matches a parameter-matched LoRA at absorbing SFT. Any advantage has to show
+  up in legibility, transplant and localization, not in fit.
+
+### P check: does removing LDA-P strip role info from the base? (job 2204358)
+P projected out at layers 5/9/13 of the base, no workspace. Role probe = assistant-vs-user
+tokens, 600 held-out conversations, split by conversation. Chance = 0.5.
+
+| condition | SFT loss | probe retrained L9 / L13 / L15 | base probe transferred L9 / L13 / L15 | identity margin |
+|---|---|---|---|---|
+| none | 1.210 | 0.89 / 0.88 / 0.85 | — | +0.12 |
+| LDA r16 | 1.224 | 0.86 / 0.84 / 0.82 | **0.64 / 0.61 / 0.76** | +0.09 |
+| random r16 | 1.222 | 0.89 / 0.88 / 0.85 | 0.89 / 0.88 / 0.85 | +0.13 |
+| LDA r64 | 1.250 | 0.85 / 0.83 / 0.82 | **0.63 / 0.59 / 0.74** | +0.11 |
+| random r64 | 1.255 | 0.89 / 0.88 / 0.84 | 0.89 / 0.87 / 0.84 | +0.20 |
+
+Reading:
+- LDA-P carries the base's own role readout: a probe trained on the intact base falls to near
+  chance. Same capability cost as random.
+- Role information is redundant: a fresh probe still gets 0.83–0.85, and the transferred probe
+  partly recovers by L15 (0.74). The base recomputes role after the takeover layers.
+- The identity margin barely moves, but base OLMo-2's latent Assistant is small to begin with
+  (+0.12), and 15 prompts is noisy.
+- Next options for a stronger hard variant: LEACE-style erasure (guarantees no *linear* probe
+  recovers role at that layer); a takeover at every layer after the first write; or accept
+  "primary channel" takeover and measure whether post-training behavior routes through it.
 
 ### Debug notes
 - Off-module metrics differ in the 3rd–4th decimal across GPU types (H100/A100/L40S bf16).
