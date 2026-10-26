@@ -46,6 +46,7 @@ class PersonaContext:
     records: dict = field(default_factory=dict)
     cache_position: torch.Tensor | None = None  # absolute positions of this forward's tokens
     cache: dict = field(default_factory=dict)  # module-owned state that persists across decoding steps
+    pad_mask: torch.Tensor | None = None  # (B, T_prompt) 1=real token, for left-padded batched generation
 
 
 def _split(out):

@@ -20,8 +20,9 @@ K slots of width d_ws, computed causally per position (slot state z_t depends on
 Access log (ctx.record): per read layer, slot->position attention weights (B, T, K, T), mean
 over heads, plus slot states and per-position broadcast weights over slots. Recording uses an explicit attention path, so keep sequences short.
 
-Generation: source keys/values persist in ctx.cache across decoding steps. Assumes right
-padding (or batch size 1), since padded prefix positions would otherwise be attendable sources.
+Generation: source keys/values persist in ctx.cache across decoding steps. For left-padded
+batches set handle.pad_mask = prompt attention_mask so pad positions are not sources;
+right padding needs nothing (pads come after every real token).
 """
 import math
 from dataclasses import dataclass
@@ -81,8 +82,9 @@ class Read(nn.Module):
         x = self.norm_h(h)
         return self.k(x), self.v(x)
 
-    def forward(self, z, slot_emb, src_k, src_v, q_pos, src_pos, attn_dtype, explicit=False):
+    def forward(self, z, slot_emb, src_k, src_v, q_pos, src_pos, attn_dtype, explicit=False, src_valid=None):
         """z (B,T,K,d); src_k/v (B,S,d); q_pos (T,), src_pos (S,) absolute positions.
+        src_valid (B,S) bool marks non-pad sources (None = all valid).
         Slots are folded into query heads (B, H*K, T, dh) sharing the H source heads (GQA),
         so the full-sequence case is plain causal attention on the fused kernels."""
         B, T, K, d = z.shape
@@ -93,8 +95,12 @@ class Read(nn.Module):
         k = src_k.reshape(B, S, H, dh).transpose(1, 2)
         v = src_v.reshape(B, S, H, dh).transpose(1, 2)
         weights = None
+        mask = src_pos[None, :] <= q_pos[:, None]  # (T, S)
+        if src_valid is not None:
+            # pad queries keep their own position so no row is fully masked (avoids NaNs)
+            mask = (mask[None] & src_valid[:, None, :]) | (src_pos[None, None, :] == q_pos[None, :, None])
+            mask = mask[:, None]  # (B, 1, T, S)
         if explicit:
-            mask = src_pos[None, :] <= q_pos[:, None]  # (T, S)
             kk, vv = k.repeat_interleave(K, 1), v.repeat_interleave(K, 1)
             s = (q @ kk.transpose(-1, -2)) / math.sqrt(dh)
             a = s.masked_fill(~mask, float("-inf")).softmax(-1)  # (B, H*K, T, S)
@@ -102,10 +108,9 @@ class Read(nn.Module):
             weights = a.reshape(B, H, K, T, S).mean(1).permute(0, 2, 1, 3)  # (B, T, K, S)
         else:
             q, k, v = q.to(attn_dtype), k.to(attn_dtype), v.to(attn_dtype)
-            if T == S:  # full sequence from position 0
+            if T == S and src_valid is None:  # full unpadded sequence from position 0
                 out = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
-            else:  # decoding against cached sources
-                mask = src_pos[None, :] <= q_pos[:, None]
+            else:  # decoding against cached sources, or padded batch
                 out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True)
             out = out.float()
         out = out.reshape(B, H, K, T, dh).permute(0, 3, 2, 1, 4).reshape(B, T, K, d)
@@ -178,7 +183,12 @@ class Workspace(PersonaModule):
                 pos_all = pos
             if not torch.is_grad_enabled():
                 ctx.cache[idx] = (k, v, pos_all)
-            z, w = read(z, self.slot_emb, k, v, pos, pos_all, h.dtype, explicit=ctx.record)
+            valid = None
+            if ctx.pad_mask is not None:
+                pm = ctx.pad_mask.to(h.device).bool()
+                T0 = pm.shape[1]
+                valid = torch.where(pos_all[None] < T0, pm[:, pos_all.clamp(max=T0 - 1)], True)
+            z, w = read(z, self.slot_emb, k, v, pos, pos_all, h.dtype, explicit=ctx.record, src_valid=valid)
             if ctx.record:
                 rec["access"] = w
                 rec["slots"] = z

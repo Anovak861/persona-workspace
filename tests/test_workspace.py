@@ -127,3 +127,20 @@ def test_swap(kind, tmp_path):
     h2 = attach(model2, ws_for(model2))
     h2.load(str(tmp_path / "ws.pt"))
     torch.testing.assert_close(model2(x).logits, a)
+
+
+def test_left_padded_batch_generation_matches_single(kind, hard):
+    model = tiny(kind)
+    h = attach(model, ws_for(model, hard=hard))
+    perturb(model.persona)
+    a, b = x[0, :6], x[1, :9]
+    singles = [model.generate(s[None], max_new_tokens=5, do_sample=False) for s in (a, b)]
+    pad = 0
+    ids = torch.stack([torch.cat([torch.full((3,), pad), a]), b])
+    mask = torch.stack([torch.cat([torch.zeros(3, dtype=torch.long), torch.ones(6, dtype=torch.long)]),
+                        torch.ones(9, dtype=torch.long)])
+    h.pad_mask = mask
+    out = model.generate(ids, attention_mask=mask, max_new_tokens=5, do_sample=False, pad_token_id=pad)
+    h.pad_mask = None
+    assert torch.equal(out[0, 3:], singles[0][0])
+    assert torch.equal(out[1], singles[1][0])
