@@ -40,20 +40,31 @@ Per layer ℓ: `s ← s + Block_ℓ(s + R_ℓ·norm(h_ℓ))`, then `h_ℓ ← h_
 so step 0 equals the base exactly. Readable state: `s` at every token and layer.
 
 ### A2 — global workspace
-Must stay causal, so the workspace is recomputed per position over its own prefix:
-- **Read** at layers {4, 8, 12}: K=16 slots, d_ws=256. Each slot is a learned query (plus a
-  projection of the previous workspace state) that attends over *sources* = (prefix positions ×
-  read layers), with top-k sparse attention so sources compete for limited capacity (Goyal et al. 2021).
-- **Process**: slot self-attention + MLP in 256-d.
-- **Broadcast** at layers {5, 9, 13}: each position cross-attends to its own K slots and
-  writes back through a zero-init projection.
-- **Soft (A2s)**: additive broadcast only.
-- **Hard (A2h)**: no other trainable write path, and at late broadcast layers the write
-  *replaces* a learned r-dim subspace of the residual (project out P, write workspace into it).
-  So the head's view of that subspace is purely workspace content. Open design question — see
-  "Decisions to revisit".
-- **Access log**: slot→source attention weights per token = what entered the workspace.
-- Collapse mitigation: slot-usage entropy regularizer, slot dropout; monitor per-slot usage.
+As implemented ([persona_ws/workspace.py](persona_ws/workspace.py)). It must stay causal, so slot state z_t is
+computed per position from tokens ≤ t.
+- **Read** after base layers {3, 7, 11}: K=16 slots, d_ws=512, 8 heads. Slot queries come from
+  (slot embedding + z) and attend causally over that layer's prefix positions. Sources compete
+  per slot via softmax. Slots are folded into GQA query heads, so this runs on fused causal kernels.
+  - *Changed from the original sketch:* no pooling of sources across read layers (it needed a
+    T·K×S explicit mask, ~50 GB of scores at T=2048) and no top-k. Earlier reads reach later
+    ones through z. Top-k / cross-layer competition is a possible later variant.
+- **Process**: slot self-attention + MLP among the K slots, per position.
+- **Broadcast** after base layers {5, 9, 13}: each position attends over its own K slots.
+- **Soft (A2s)**: `h += W·broadcast`, W zero-init. 25.2M params.
+- **Hard (A2h)**: `h ← h − PPᵀh + P·f(broadcast)` at write layers. P is a frozen orthonormal
+  (d×64) role subspace per layer, and the broadcast query also only sees (I−PPᵀ)h, so the base's
+  own content in P is gone downstream and P carries only workspace content. 22.1M params.
+  - P choice ([scripts/fit_role_subspace.py](scripts/fit_role_subspace.py)): raw SVD of per-example
+    assistant−user mean differences is dominated by high-norm residual directions. Removing it
+    is catastrophic (loss 1.07 → 6.67 at r=64). Whitened/LDA directions cost about the same as
+    random (r=64: 1.112 vs random 1.118). **Using LDA r=64.**
+  - TODO: check that removing LDA-P actually removes role/persona information from the base
+    (role probe accuracy, identity margin) beyond what removing random P does. Otherwise
+    "hard" only takes over a harmless subspace.
+- **Access log** (`handle.record=True`): per read layer, slot→position weights (B,T,K,T),
+  slot states, and per-position broadcast weights over slots.
+- Not yet done: slot-collapse monitoring and regularizers.
+- Generation: read sources are cached across decoding steps. Assumes right padding or batch size 1.
 
 ### A3 — forced persona experts (OLMoE)
 - Add **E_p = 1** persona expert per layer (SwiGLU, intermediate 512 → ~3.1M params/layer,
@@ -147,6 +158,16 @@ Reading (small probe set, treat as directional):
 - Base OLMoE gets roughly a quarter of the way to SFT on margin, and never ends its turn.
   So most of the identity effect, and all of the turn-taking, comes from post-training,
   and the module has plenty of signal to capture.
+
+### A1 side-car, OLMo-2 1B, 100k Tülu SFT examples (job 2204007, 770 steps, ~1 h on 4×H100)
+- Held-out SFT loss: on **1.073**, off (= base) 1.187.
+- Identity probes, on vs off: claims AI 0.80 vs 0.07; ends its own turn 100% vs 13%;
+  logp margin +1.11 vs +0.12. The AI2 full-SFT reference gets 0.87 / 100% / +1.58.
+- So a frozen-base side-car with 25M params captures most of the identity shift in 100k examples.
+
+### Debug notes
+- Off-module metrics differ in the 3rd–4th decimal across GPU types (H100/A100/L40S bf16).
+  Run comparison evals on one GPU type.
 
 ## Decisions to revisit
 - A2h definition (subspace takeover vs logit-level bottleneck vs late-layer replacement).
