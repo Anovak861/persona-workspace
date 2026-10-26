@@ -196,6 +196,24 @@ Reading:
   recovers role at that layer); a takeover at every layer after the first write; or accept
   "primary channel" takeover and measure whether post-training behavior routes through it.
 
+### A2 workspace, same data and steps as A1 (jobs 2204241 soft, 2204264 hard with LDA-P r64)
+| arm | params | val on (off 1.187) | ends its turn | logp margin | refusals on benign identity Qs | distinct answers |
+|---|---|---|---|---|---|---|
+| A1 side-car | 25.2M | 1.073 | 100% | +1.11 | 2/15 | 15/15 |
+| B1 LoRA | 24.1M | 1.074 | 100% | +1.15 | 0/15 | 15/15 |
+| A2s workspace soft | 25.2M | 1.095 | 100% | +0.96 | **10/15** | 13/15 |
+| A2h workspace hard | 22.1M | 1.148 | 100% | +0.67 | **14/15** | 5/15 |
+
+- The bottleneck costs fit (+0.02 soft, +0.075 hard), but turn-taking is fully learned in both.
+- **Failure mode: over-refusal / mode collapse.** The workspace arms answer benign identity
+  questions with "I'm sorry, but I can't assist with that." Hard collapses onto almost one answer.
+  Hypothesis: a capacity-limited workspace carries a coarse persona-mode signal, and the
+  frequent refusal mode from Tülu gets over-selected. That fits the "low-dimensional persona"
+  question (option 5), but it could also be undertraining or slot collapse.
+- Next: (1) slot usage and access-log diagnostics on A2s/A2h (collapse?); (2) a broader
+  behavior eval (XSTest safe/unsafe for over-refusal, held-out helpfulness prompts) so this
+  isn't resting on 15 identity questions; (3) longer training / larger K to see if it persists.
+
 ### Debug notes
 - Off-module metrics differ in the 3rd–4th decimal across GPU types (H100/A100/L40S bf16).
   Run comparison evals on one GPU type.
