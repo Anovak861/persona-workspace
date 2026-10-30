@@ -50,6 +50,26 @@ def _answer(text, eos):
     return text[: min(stops)] if stops else text
 
 
+def quick_set(n_safe=100, n_unsafe=50, n_alpaca=100):
+    """Fixed small prompt set for refusal curves during training."""
+    xs = xstest()
+    safe = [r for r in xs if not r["unsafe"]][:: max(1, 250 // n_safe)][:n_safe]
+    unsafe = [r for r in xs if r["unsafe"]][:: max(1, 200 // n_unsafe)][:n_unsafe]
+    al = alpaca(n_alpaca)
+    return ([(r["prompt"], "xstest_safe") for r in safe] + [(r["prompt"], "xstest_unsafe") for r in unsafe]
+            + [(r["prompt"], "alpaca") for r in al])
+
+
+def quick_refusal(model, tok, handle, items, max_new_tokens=24):
+    """Refusal rate per group. String-match refusal only needs the opening tokens."""
+    ans = generate(model, tok, handle, [p for p, _ in items], max_new_tokens, bs=64)
+    out = {}
+    for group in ("xstest_safe", "xstest_unsafe", "alpaca"):
+        flags = [is_refusal(a) for a, (_, g) in zip(ans, items) if g == group]
+        out[f"refusal/{group}"] = sum(flags) / len(flags)
+    return out
+
+
 @torch.no_grad()
 def generate(model, tok, handle, prompts, max_new_tokens=256, bs=16):
     """Greedy, left-padded batches. Returns answers in prompt order."""
@@ -66,7 +86,7 @@ def generate(model, tok, handle, prompts, max_new_tokens=256, bs=16):
         if handle is not None:
             handle.pad_mask = mask
         gen = model.generate(input_ids=ids, attention_mask=mask, max_new_tokens=max_new_tokens, do_sample=False,
-                             pad_token_id=pad, eos_token_id=tok.eos_token_id)
+                             pad_token_id=pad, eos_token_id=tok.eos_token_id, use_cache=True)
         if handle is not None:
             handle.pad_mask = None
         for j, i in enumerate(idx):

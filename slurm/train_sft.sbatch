@@ -17,6 +17,6 @@ export WANDB_DIR=/gpfs/fs2/scratch/anovak5/persona-workspace/wandb
 export TOKENIZERS_PARALLELISM=false
 cd $HOME/persona-workspace
 export PYTHONPATH=$HOME/persona-workspace
-NGPU=$(nvidia-smi -L | wc -l)
+NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr "," "\n" | grep -c .)
 /gpfs/fs2/scratch/anovak5/persona-workspace/env/bin/torchrun --standalone --nproc_per_node=$NGPU \
     scripts/train_sft.py "$@"

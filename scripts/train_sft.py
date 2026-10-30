@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from persona_ws import SideCar, SideCarConfig, Workspace, WorkspaceConfig, attach, n_trainable
 from persona_ws.data import collate, render
-from persona_ws.evals import identity
+from persona_ws.evals import behavior, identity
 
 p = argparse.ArgumentParser()
 p.add_argument("--arm", choices=["sidecar", "ws_soft", "ws_hard", "lora"], required=True)
@@ -46,6 +46,7 @@ p.add_argument("--write_layers", type=int, nargs="+", default=[5, 9, 13])
 p.add_argument("--hard_rank", type=int, default=64)
 p.add_argument("--P_path", default=None, help="fit_role_subspace.py output, for ws_hard")
 p.add_argument("--eval_every", type=int, default=200)
+p.add_argument("--refusal_every", type=int, default=0, help="refusal curve + module checkpoint every N steps (0=off)")
 p.add_argument("--name", default=None)
 p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspace/ckpt")
 p.add_argument("--seed", type=int, default=0)
@@ -192,6 +193,7 @@ if is_main:
     json.dump(cfg, open(f"{out_dir}/config.json", "w"), indent=1)
     wandb.init(project="persona-workspace", name=name, job_type="sft", config=cfg)
     print(f"trainable params {n_params / 1e6:.1f}M, {total} optimizer steps", flush=True)
+    refusal_items = behavior.quick_set() if args.refusal_every else None
     base_val = val_loss(False)
     init_val = val_loss(True)  # != base only for ws_hard: the takeover tax at init
     wandb.log({"val/loss_on": init_val, "val/loss_off": base_val, "val/necessity_gap": base_val - init_val}, step=0)
@@ -226,6 +228,16 @@ for epoch in range(args.epochs):
             if is_main:
                 wandb.log({"val/loss_on": on, "val/loss_off": off, "val/necessity_gap": off - on}, step=step)
                 print(f"step {step}/{total} val on {on:.4f} off {off:.4f}", flush=True)
+        if args.refusal_every and (step % args.refusal_every == 0 or step == total):
+            if is_main:
+                model.eval()
+                r = behavior.quick_refusal(model, tok, handle, refusal_items)
+                model.train()
+                wandb.log(r, step=step)
+                print(f"step {step}/{total} " + " ".join(f"{k} {v:.3f}" for k, v in r.items()), flush=True)
+                if handle is not None:
+                    handle.save(f"{out_dir}/persona_step{step}.pt")
+            dist.barrier()
 
 if is_main:
     if handle is not None:
