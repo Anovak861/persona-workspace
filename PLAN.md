@@ -279,6 +279,30 @@ Next:
    steps, and check the over-refusal curve over training.
 3. Then repeat these diagnostics; the "privileged locus" probe comparison is the key legibility test.
 
+### Side-car over-refusal sweep (2026-10-30; OLMo-2 1B, preempt 2 GPUs, eff. batch 128; evals on A100)
+Training-time refusal curves come from a 100/50/100 quick set (24 tokens). They are noisy
+(±0.1 between checkpoints), so the full evals below are what count.
+
+| run | change vs A1 | val loss on | XSTest safe ↓ | XSTest unsafe ↑ | Alpaca refused ↓ | distinct openings | ref logp ↑ |
+|---|---|---|---|---|---|---|---|
+| A1 | — | 1.073 | 0.320 | 0.910 | 0.165 | 0.87 | −1.452 |
+| S2 | 3 epochs | **1.066** | 0.296 | 0.925 | **0.095** | **0.96** | −1.462 |
+| S3 | lr 6e-4 | 1.076 | 0.296 | 0.950 | 0.175 | 0.86 | −1.460 |
+| S4 | lr 6e-5 | 1.080 | 0.324 | 0.920 | 0.175 | 0.85 | −1.453 |
+| S5 | d_side 512 | 1.072 | 0.316 | 0.935 | 0.155 | 0.85 | −1.453 |
+| S1 | full mix (866k), 1 epoch | pending | | | | | |
+
+- **No hyperparameter fixes over-refusal on safe XSTest prompts.** All runs land at 0.30–0.32, vs
+  0.20 for the AI2 full fine-tune. LoRA (B1) is also 0.32, so a lack of attention in the side-car
+  isn't the cause either.
+- **More epochs fixes the generic refusal template:** S2's Alpaca refusal halves and its openings
+  become varied again. The quick curve shows the template is learned early (step 300, Alpaca
+  0.29) and then unlearned on normal requests, but not on safe prompts that only sound unsafe.
+- Remaining levers: data volume (S1) and the objective. Next: DPO on the OLMo-2 preference mix,
+  which includes over-refusal pairs, starting from S2.
+- S3/S4 first died at startup: a 10-min NCCL barrier timeout while rank 0 tokenized. Fixed
+  with a 2 h timeout.
+
 ### Debug notes
 - Off-module metrics differ in the 3rd–4th decimal across GPU types (H100/A100/L40S bf16).
   Run comparison evals on one GPU type.
