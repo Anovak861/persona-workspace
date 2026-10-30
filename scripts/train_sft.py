@@ -11,6 +11,7 @@ import math
 import os
 import random
 import time
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -52,11 +53,12 @@ p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspac
 p.add_argument("--seed", type=int, default=0)
 args = p.parse_args()
 
-dist.init_process_group("nccl")
-rank, world = dist.get_rank(), dist.get_world_size()
 local = int(os.environ["LOCAL_RANK"])
 torch.cuda.set_device(local)
 dev = torch.device("cuda", local)
+# long timeout: other ranks wait at a barrier while rank 0 tokenizes, which can exceed 10 min
+dist.init_process_group("nccl", timeout=timedelta(hours=2), device_id=dev)
+rank, world = dist.get_rank(), dist.get_world_size()
 torch.manual_seed(args.seed)
 is_main = rank == 0
 name = args.name or f"sft-{args.arm}-{args.model.split('/')[-1]}"
