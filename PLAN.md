@@ -290,7 +290,7 @@ Training-time refusal curves come from a 100/50/100 quick set (24 tokens). They 
 | S3 | lr 6e-4 | 1.076 | 0.296 | 0.950 | 0.175 | 0.86 | −1.460 |
 | S4 | lr 6e-5 | 1.080 | 0.324 | 0.920 | 0.175 | 0.85 | −1.453 |
 | S5 | d_side 512 | 1.072 | 0.316 | 0.935 | 0.155 | 0.85 | −1.453 |
-| S1 | full mix (866k), 1 epoch | pending | | | | | |
+| S1 | full mix (866k), 1 epoch, 4×H100 | **1.026** | 0.324 | 0.945 | 0.125 | 0.93 | **−1.420** |
 
 - **No hyperparameter fixes over-refusal on safe XSTest prompts.** All runs land at 0.30–0.32, vs
   0.20 for the AI2 full fine-tune. LoRA (B1) is also 0.32, so a lack of attention in the side-car
@@ -298,8 +298,32 @@ Training-time refusal curves come from a 100/50/100 quick set (24 tokens). They 
 - **More epochs fixes the generic refusal template:** S2's Alpaca refusal halves and its openings
   become varied again. The quick curve shows the template is learned early (step 300, Alpaca
   0.29) and then unlearned on normal requests, but not on safe prompts that only sound unsafe.
-- Remaining levers: data volume (S1) and the objective. Next: DPO on the OLMo-2 preference mix,
-  which includes over-refusal pairs, starting from S2.
+- **Data volume isn't the lever either.** S1 sees 9× the data: much better loss and ref logp,
+  and the same safe refusal.
+
+### Side-car DPO (2026-11-01; scripts/train_dpo.py, from S2; preempt 2×A100, 128 pairs/step)
+Frozen base, only the side-car trains. The reference is S2's side-car, via functional_call with
+frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-preference-mix`
+(single-turn; only ~1.7% of pairs are chosen-comply/rejected-refuse, about matched by the reverse).
+
+| run | pairs, lr | XSTest safe ↓ | XSTest unsafe ↑ | Alpaca refused ↓ | distinct openings | mean chars | ref logp ↑ | held-out pref acc | claims AI (on) | identity logp margin |
+|---|---|---|---|---|---|---|---|---|---|---|
+| S2 (init) | — | 0.296 | 0.925 | 0.095 | 0.96 | 579 | −1.462 | — | 0.87 | 1.33 |
+| D1 | 50k, 2e-5 | 0.276 | 0.885 | 0.085 | 0.97 | 932 | −1.536 | 0.64 | 0.87 | 1.49 |
+| D2 | 50k, 1e-4 | **0.072** | 0.745 | 0.040 | 0.995 | 1098 | −1.640 | 0.63 | **0.47** | 1.04 |
+| D3 | 150k, 5e-5 | 0.128 | 0.755 | **0.025** | 0.99 | 1057 | −1.617 | 0.65 | 0.73 | 1.58 |
+| AI2 DPO (full FT) | 378k | 0.080 | 0.775 | 0.020 | 0.98 | 1016 | −1.448 | — | — | — |
+
+- **DPO fixes the side-car's over-refusal**, landing on AI2-DPO's tradeoff: less over-refusal, less
+  refusal of unsafe prompts, and answers about 2× longer. Ref logp falls as answers lengthen, as it
+  does for AI2 (SFT −1.36 → DPO −1.45), but by more here.
+- **Strong DPO erodes the module's assistant identity.** D2 says "I am 22 years old", "I live
+  in a city near the coast", "Yes, I am conscious"; D3 does so mildly ("I live in Cambridge,
+  Massachusetts"). The preference data has no identity pairs, so nothing holds the persona in
+  place. This is relevant to the persona-module thesis: the identity the side-car installed in
+  SFT is fragile under a non-persona objective. Fixes: mix identity/persona pairs into DPO, or an
+  SFT-loss / KL anchor on persona prompts.
+- Pick for downstream work: **D3**, with the identity drift noted. D2 for maximum helpfulness.
 - S3/S4 first died at startup: a 10-min NCCL barrier timeout while rank 0 tokenized. Fixed
   with a 2 h timeout.
 
