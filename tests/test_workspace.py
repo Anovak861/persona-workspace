@@ -134,13 +134,20 @@ def test_left_padded_batch_generation_matches_single(kind, hard):
     h = attach(model, ws_for(model, hard=hard))
     perturb(model.persona)
     a, b = x[0, :6], x[1, :9]
-    singles = [model.generate(s[None], max_new_tokens=5, do_sample=False) for s in (a, b)]
+    gen = dict(max_new_tokens=5, do_sample=False, return_dict_in_generate=True, output_logits=True)
+    singles = [model.generate(s[None], **gen) for s in (a, b)]
     pad = 0
     ids = torch.stack([torch.cat([torch.full((3,), pad), a]), b])
     mask = torch.stack([torch.cat([torch.zeros(3, dtype=torch.long), torch.ones(6, dtype=torch.long)]),
                         torch.ones(9, dtype=torch.long)])
     h.pad_mask = mask
-    out = model.generate(ids, attention_mask=mask, max_new_tokens=5, do_sample=False, pad_token_id=pad)
+    out = model.generate(ids, attention_mask=mask, pad_token_id=pad, **gen)
     h.pad_mask = None
-    assert torch.equal(out[0, 3:], singles[0][0])
-    assert torch.equal(out[1], singles[1][0])
+    for row, s, n in ((0, singles[0], 6), (1, singles[1], 9)):
+        # identical up to the first greedy step; batching may only flip an exact near-tie
+        for t in range(5):
+            torch.testing.assert_close(out.logits[t][row], s.logits[t][0], atol=1e-4, rtol=1e-4)
+            if out.sequences[row, -5 + t] != s.sequences[0, n + t]:
+                top2 = s.logits[t][0].topk(2).values
+                assert top2[0] - top2[1] < 1e-3
+                break
