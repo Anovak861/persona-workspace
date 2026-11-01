@@ -337,6 +337,11 @@ frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-prefere
   (safe / unsafe / Alpaca refused, held-out claims AI):
   D3 .08/.74/.02 (0.36 at end), D3a1 .03/.80/.03/**0.71**, D3a10 .17/.88/.05/0.68. The anchor
   holds identity on unseen questions, and weight 1 leaves the over-refusal fix intact.
+  Final full evals (safe / unsafe / Alpaca refused, ref logp, 15-q claims AI, held-out claims AI):
+  D3 .128/.755/.025, −1.617, 0.73, 0.36; **D3a1 .108/.800/.040, −1.572, 0.87, 0.64**;
+  D3a10 .216/.870/.055, −1.551, 0.80, 0.61. Weight 1 is the pick: it keeps D3's over-refusal fix,
+  refuses unsafe prompts more, and its identity ends above the S2 init (0.54). Weight 10 just
+  slows DPO. Next: D4a1 = the same recipe from S1, with an anchor set built from S1.
 
 ### Side-car interpretability check, S2 and D3 vs S2 (results/diag/sidecar-*.json)
 | | S2 | D3 |
