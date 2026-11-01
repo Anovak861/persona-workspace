@@ -327,6 +327,16 @@ frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-prefere
 - Held-out persona questions (28 never anchored; `scripts/eval_identity.py`), claims AI:
   S2 0.54, D1 0.79, D2 0.21, D3 0.36. S2 is already inconsistent here ("Do you play video
   games?" → "Yes, I do"); the 15-question probe overstates identity consistency.
+  The regex undercounts: of S2's 13 non-AI answers, only about 5 claim a human life (siblings,
+  Midwest hometown, a cat); the rest are AI-consistent without keywords, or ask for clarification.
+- Reference models on the same held-out set: **S1 (full mix) 0.82**, AI2 SFT 0.86, AI2 DPO 0.96
+  (15-q probe 0.93 / 0.87 / 0.87). So S2's 0.54 comes from the SFT data subset, not from the
+  side-car: with the full mix the side-car matches AI2's full fine-tune. (The Instruct
+  reference failed to load: a bad repo id.)
+- Anchored DPO from S2 (`--anchor results/anchor/S2-anchor.json`), quick set at step 750/1151
+  (safe / unsafe / Alpaca refused, held-out claims AI):
+  D3 .08/.74/.02 (0.36 at end), D3a1 .03/.80/.03/**0.71**, D3a10 .17/.88/.05/0.68. The anchor
+  holds identity on unseen questions, and weight 1 leaves the over-refusal fix intact.
 
 ### Side-car interpretability check, S2 and D3 vs S2 (results/diag/sidecar-*.json)
 | | S2 | D3 |
@@ -363,7 +373,10 @@ Reading:
   reverting any band costs ≤ 0.04, and transplanting any band gives a third to a half of it.
   The identity drift is similarly spread; reverting L8–11 restores the 15-q score (small sample).
 - Writes are not role-selective: the side-car writes as much on user tokens as on assistant
-  tokens. Nothing in v0 restricts it to the assistant turn.
+  tokens. That's expected and fine. The side-car is per-position, so writing into the residual
+  during the user turn is its only way to shape later positions (planning ahead through base
+  attention). The separation question is whether persona info lives in the side-car, not where
+  it writes.
 - Logit lens on the mean write is uninformative (the same junk subwords for refused, complied
   and identity prompts): the writes act through later layers, not directly on vocab. A
   mean-subtracted lens would be the better version.
