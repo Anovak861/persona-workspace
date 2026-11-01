@@ -6,6 +6,10 @@ The reference policy is the initial module (the SFT checkpoint); its log-probs c
 functional_call with the frozen copy of the module's parameters, so no second model is held.
 Default loss is length-normalized DPO (Tulu 3 / OLMo 2 recipe). Logs preference accuracy and
 reward margins, held-out preference accuracy, refusal curves, and end-of-run identity probes.
+
+Optional identity anchor (--anchor, from make_anchor.py): once per optimizer step, a token-level
+KL(ref || policy) on the reference's own answers to persona prompts, weighted by --anchor_weight.
+It holds the module's persona in place while DPO moves everything else.
 """
 import argparse
 import json
@@ -23,7 +27,7 @@ from datasets import load_dataset
 from torch.func import functional_call
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from persona_ws import n_trainable
+from persona_ws import anchor, n_trainable
 from persona_ws.data import collate, render
 from persona_ws.evals import behavior, identity
 from persona_ws.load import load_arm
@@ -41,6 +45,10 @@ p.add_argument("--warmup", type=float, default=0.1)
 p.add_argument("--epochs", type=int, default=1)
 p.add_argument("--beta", type=float, default=5.0)
 p.add_argument("--loss", choices=["dpo", "dpo_norm"], default="dpo_norm")
+p.add_argument("--anchor", default=None, help="make_anchor.py output json")
+p.add_argument("--anchor_weight", type=float, default=1.0)
+p.add_argument("--anchor_all", action="store_true", help="also anchor answers that do not claim AI")
+p.add_argument("--anchor_bs", type=int, default=8, help="anchor sequences per GPU per optimizer step")
 p.add_argument("--eval_every", type=int, default=50)
 p.add_argument("--refusal_every", type=int, default=50, help="refusal curve + module checkpoint (0=off)")
 p.add_argument("--name", required=True)
@@ -87,6 +95,26 @@ ds = ds.filter(lambda ex: any(l != -100 for l in ex["c_labels"]) and any(l != -1
 if is_main:
     dist.barrier()
 val, train = ds.select(range(args.n_val)), ds.select(range(args.n_val, len(ds)))
+anchor_rows = []
+if args.anchor:
+    assert args.grad_accum > 1, "the anchor backward runs inside no_sync on the first micro-batch"
+    rows = json.load(open(args.anchor))["rows"]
+    if not args.anchor_all:  # anchor only the answers where the reference holds the AI persona
+        rows = [r for r in rows if identity.AI_RE.search(r["response"])]
+    if is_main:
+        print(f"anchor rows {len(rows)}", flush=True)
+    anchor_rows = [render([{"role": "user", "content": r["prompt"]}, {"role": "assistant", "content": r["response"]}],
+                          tok, max_len=args.max_len) for r in rows]
+    anchor_rows = anchor_rows[rank::world]
+
+
+def anchor_batches():
+    rng = random.Random(args.seed + rank)
+    while True:
+        idx = list(range(len(anchor_rows)))
+        rng.shuffle(idx)
+        for k in range(0, len(idx) - args.anchor_bs + 1, args.anchor_bs):
+            yield collate([anchor_rows[j] for j in idx[k:k + args.anchor_bs]], tok.pad_token_id)
 
 
 def batches(data, bs, shuffle, seed):
@@ -137,6 +165,17 @@ def ref_logp(b):
         return seq_logp(model, b, ref_params)[0]
 
 
+def anchor_kl(m, b):
+    """Mean per-token KL(ref || policy) over the answer tokens."""
+    handle.role_ids = b["role_ids"]
+    kw = {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+    pos = b["labels"][:, 1:] != -100
+    with torch.no_grad():
+        ref = functional_call(model, ref_params, (), kw, strict=False).logits[:, :-1][pos].float().log_softmax(-1)
+    pol = m(**kw).logits[:, :-1][pos].float().log_softmax(-1)
+    return (ref.exp() * (ref - pol)).sum(-1).mean()
+
+
 @torch.no_grad()
 def val_metrics():
     model.eval()
@@ -175,6 +214,7 @@ def refusal_point(step):
     if args.refusal_every and is_main:
         model.eval()
         r = behavior.quick_refusal(model, tok, handle, refusal_items)
+        r["identity/heldout_claims_ai"] = anchor.heldout_identity(model, tok, handle)[0]
         model.train()
         wandb.log(r, step=step)
         print(f"step {step}/{total} " + " ".join(f"{k} {v:.3f}" for k, v in r.items()), flush=True)
@@ -187,8 +227,14 @@ step, t0 = 0, time.time()
 model.train()
 for epoch in range(args.epochs):
     it = batches(train, args.bs, True, args.seed + epoch)
+    a_it = anchor_batches() if anchor_rows else None
     while step < total * (epoch + 1) // args.epochs:
-        stats = torch.zeros(4, device=dev)  # loss, acc, margin, chosen reward
+        stats = torch.zeros(5, device=dev)  # loss, acc, margin, chosen reward, anchor KL
+        if a_it is not None:
+            with ddp.no_sync():
+                kl = anchor_kl(ddp, {k: v.to(dev) for k, v in next(a_it).items()})
+                (args.anchor_weight * kl).backward()
+            stats[4] = kl.detach()
         for micro in range(args.grad_accum):
             b = {k: v.to(dev) for k, v in next(it).items()}
             ref = ref_logp(b)
@@ -197,7 +243,7 @@ for epoch in range(args.epochs):
                 pol, cnt = seq_logp(ddp, b)
                 loss, rc, rr = dpo(pol, ref, cnt)
                 (loss / args.grad_accum).backward()
-            stats += torch.stack([loss.detach(), (rc > rr).float().mean(), (rc - rr).mean(), rc.mean()]) / args.grad_accum
+            stats[:4] += torch.stack([loss.detach(), (rc > rr).float().mean(), (rc - rr).mean(), rc.mean()]) / args.grad_accum
         gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
@@ -208,7 +254,7 @@ for epoch in range(args.epochs):
         if is_main and step % 5 == 0:
             wandb.log({"train/loss": stats[0].item(), "train/pref_acc": stats[1].item(),
                        "train/margin": stats[2].item(), "train/reward_chosen": stats[3].item(),
-                       "train/grad_norm": gn.item(), "train/lr": sched.get_last_lr()[0],
+                       "train/anchor_kl": stats[4].item(), "train/grad_norm": gn.item(), "train/lr": sched.get_last_lr()[0],
                        "perf/s_per_step": (time.time() - t0) / 5}, step=step)
             t0 = time.time()
         if step % args.eval_every == 0 or step == total:
@@ -216,7 +262,7 @@ for epoch in range(args.epochs):
             if is_main:
                 wandb.log(v, step=step)
                 print(f"step {step}/{total} train loss {stats[0].item():.4f} acc {stats[1].item():.3f} "
-                      f"val acc {v['val/pref_acc']:.3f} margin {v['val/margin']:.3f}", flush=True)
+                      f"val acc {v['val/pref_acc']:.3f} margin {v['val/margin']:.3f} anchor_kl {stats[4].item():.4f}", flush=True)
         if args.refusal_every and (step % args.refusal_every == 0 or step == total):
             refusal_point(step)
 
@@ -235,6 +281,7 @@ if is_main:
         summary[f"identity/claims_ai_{tag}"] = sum(r["claims_ai"] for r in g) / len(g)
         summary[f"identity/logp_margin_{tag}"] = sum(r["margin"] for r in m) / len(m)
     handle.enabled = True
+    summary["identity/heldout_claims_ai_on"], gens["heldout"] = anchor.heldout_identity(model, tok, handle)
     json.dump({"summary": summary, "generations": gens}, open(f"{out_dir}/identity.json", "w"), indent=1)
     wandb.log(summary)
     wandb.finish()
