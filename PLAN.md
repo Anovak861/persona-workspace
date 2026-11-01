@@ -324,6 +324,52 @@ frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-prefere
   SFT is fragile under a non-persona objective. Fixes: mix identity/persona pairs into DPO, or an
   SFT-loss / KL anchor on persona prompts.
 - Pick for downstream work: **D3**, with the identity drift noted. D2 for maximum helpfulness.
+- Held-out persona questions (28 never anchored; `scripts/eval_identity.py`), claims AI:
+  S2 0.54, D1 0.79, D2 0.21, D3 0.36. S2 is already inconsistent here ("Do you play video
+  games?" → "Yes, I do"); the 15-question probe overstates identity consistency.
+
+### Side-car interpretability check, S2 and D3 vs S2 (results/diag/sidecar-*.json)
+| | S2 | D3 |
+|---|---|---|
+| ‖write‖/‖h‖, L0–13 (user / assistant tokens) | 0.08–0.14 / 0.07–0.12 | 0.09–0.14 / 0.08–0.12 |
+| ‖write‖/‖h‖, L14–15 | 0.20–0.23 | 0.19–0.21 |
+| refusal probe at decision token, side-car s vs base resid (module off), L8 / L12 / L15 | 0.74/0.63, 0.78/0.67, 0.79/0.65 | 0.83/0.71, 0.86/0.75, 0.86/0.76 |
+| unsafe-vs-safe probe, side-car vs base, L8 / L12 / L15 | 0.77/0.76, 0.87/0.75, 0.89/0.74 | 0.77/0.76, 0.88/0.75, 0.90/0.74 |
+| PCA dims for 90% of decision-state variance (16×256) | 58 | 69 |
+
+What DPO changed (D3 vs S2):
+- Parameter change is uniform across layers (write ‖Δ‖/‖W‖ 0.15–0.20 at every layer; read 0.06,
+  MLP 0.02–0.05). ΔW_write has effective rank ~180–215 of 256: **not a low-rank or local edit**.
+- Change in the write at the decision token (XSTest-safe prompts) is nearly orthogonal to
+  the base refusal direction (diff of means, S2 labels) at every layer: |cos| ≤ 0.05. DPO did
+  not fix over-refusal by subtracting a refusal direction.
+- Band swaps (quick set, safe / unsafe / Alpaca refused; claims AI on 15 q):
+
+| | safe | unsafe | Alpaca | claims AI |
+|---|---|---|---|---|
+| D3 | 0.09 | 0.78 | 0.02 | 0.73 |
+| S2 | 0.28 | 0.96 | 0.07 | 0.87 |
+| D3 with S2 at L0–3 / L4–7 / L8–11 / L12–15 | 0.10 / 0.12 / 0.13 / 0.13 | 0.82 / 0.84 / 0.86 / 0.86 | ≤0.05 | 0.80 / 0.80 / 0.87 / 0.80 |
+| S2 with D3 at L0–3 / L4–7 / L8–11 / L12–15 | 0.16 / 0.20 / 0.19 / 0.20 | 0.94 / 0.96 / 0.94 / 0.90 | 0.06–0.09 | 0.87 |
+
+Reading:
+- **The side-car is a better readout locus than the base stream:** from L8 on, both the arm's
+  refusal decision and prompt harmfulness decode better from the 256-d side-car state than
+  from the 2048-d base residual (unsafe 0.89–0.90 vs 0.74). That's the opposite of the
+  workspace result. Caveats: the base residual here is module-off; the probe is regularized
+  (C=0.05), which may favour the smaller space.
+- **But the DPO update isn't localized:** it's spread over every layer, high rank, off the
+  canonical refusal direction, and redundant. No single 4-layer band carries the refusal fix:
+  reverting any band costs ≤ 0.04, and transplanting any band gives a third to a half of it.
+  The identity drift is similarly spread; reverting L8–11 restores the 15-q score (small sample).
+- Writes are not role-selective: the side-car writes as much on user tokens as on assistant
+  tokens. Nothing in v0 restricts it to the assistant turn.
+- Logit lens on the mean write is uninformative (the same junk subwords for refused, complied
+  and identity prompts): the writes act through later layers, not directly on vocab. A
+  mean-subtracted lens would be the better version.
+- Implication for interpretable-by-design: a dedicated stream gives a cleaner *readout*, but
+  nothing pushes its *computation* to be local. Candidates: sparsity / low-rank penalties on
+  stage updates, fewer write layers, role-gated writes.
 - S3/S4 first died at startup: a 10-min NCCL barrier timeout while rank 0 tokenized. Fixed
   with a 2 h timeout.
 
