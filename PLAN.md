@@ -342,6 +342,11 @@ frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-prefere
   D3a10 .216/.870/.055, −1.551, 0.80, 0.61. Weight 1 is the pick: it keeps D3's over-refusal fix,
   refuses unsafe prompts more, and its identity ends above the S2 init (0.54). Weight 10 just
   slows DPO. Next: D4a1 = the same recipe from S1, with an anchor set built from S1.
+- D4a1 (S1 init, S1 anchor, weight 1), full evals: safe .276 / unsafe .915 / Alpaca .075,
+  ref logp −1.527, 15-q claims AI 0.80, held-out 0.79 (0.82 in the training-time eval). Identity
+  holds at S1's level, but DPO barely moves over-refusal (S1 .324 → .276, vs S2 .296 → .108 for
+  D3a1). Open question: does the larger S1 anchor set over-constrain, or does S1 need a stronger
+  DPO push (higher lr / more pairs)?
 
 ### Side-car interpretability check, S2 and D3 vs S2 (results/diag/sidecar-*.json)
 | | S2 | D3 |
