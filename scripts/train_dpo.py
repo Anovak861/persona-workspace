@@ -66,9 +66,14 @@ is_main = rank == 0
 out_dir = f"{args.out_root}/{args.name}"
 
 model, tok, handle = load_arm(args.init, device=dev)
-assert handle is not None, "DPO here is for persona-module arms (LoRA not wired up)"
 init_cfg = json.load(open(f"{args.init}/config.json"))
-handle.checkpointing = True
+full = init_cfg["module"]["type"] == "full"  # no-module baseline: every weight trains
+assert handle is not None or full, "DPO here is for persona-module arms and full fine-tunes (LoRA not wired up)"
+if full:
+    model.requires_grad_(True)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+else:
+    handle.checkpointing = True
 model.config.use_cache = False
 n_params = n_trainable(model)
 named = {n: q for n, q in model.named_parameters() if q.requires_grad}
@@ -76,6 +81,15 @@ for q in named.values():
     q.data = q.data.float()
 ref_params = {n: q.detach().clone() for n, q in named.items()}
 params = list(named.values())
+
+
+def amp():
+    return torch.autocast("cuda", dtype=torch.bfloat16, enabled=full)
+
+
+def set_roles(b):
+    if handle is not None:
+        handle.role_ids = b["role_ids"]
 
 # ---- data (rank 0 tokenizes first) ----
 if not is_main:
@@ -141,9 +155,10 @@ def batches(data, bs, shuffle, seed):
 
 def seq_logp(m, b, param_override=None):
     """Sum of label-token logps and label count per sequence."""
-    handle.role_ids = b["role_ids"]
+    set_roles(b)
     kw = {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
-    logits = functional_call(m, param_override, (), kw, strict=False).logits if param_override else m(**kw).logits
+    with amp():
+        logits = functional_call(m, param_override, (), kw, strict=False).logits if param_override else m(**kw).logits
     labels = b["labels"][:, 1:]
     lp = -F.cross_entropy(logits[:, :-1].flatten(0, 1).float(), labels.flatten(), ignore_index=-100,
                           reduction="none").view(labels.shape)
@@ -167,12 +182,13 @@ def ref_logp(b):
 
 def anchor_kl(m, b):
     """Mean per-token KL(ref || policy) over the answer tokens."""
-    handle.role_ids = b["role_ids"]
+    set_roles(b)
     kw = {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
     pos = b["labels"][:, 1:] != -100
-    with torch.no_grad():
+    with torch.no_grad(), amp():
         ref = functional_call(model, ref_params, (), kw, strict=False).logits[:, :-1][pos].float().log_softmax(-1)
-    pol = m(**kw).logits[:, :-1][pos].float().log_softmax(-1)
+    with amp():
+        pol = m(**kw).logits[:, :-1][pos].float().log_softmax(-1)
     return (ref.exp() * (ref - pol)).sum(-1).mean()
 
 
@@ -213,12 +229,14 @@ if is_main:
 def refusal_point(step):
     if args.refusal_every and is_main:
         model.eval()
-        r = behavior.quick_refusal(model, tok, handle, refusal_items)
-        r["identity/heldout_claims_ai"] = anchor.heldout_identity(model, tok, handle)[0]
+        with amp():
+            r = behavior.quick_refusal(model, tok, handle, refusal_items)
+            r["identity/heldout_claims_ai"] = anchor.heldout_identity(model, tok, handle)[0]
         model.train()
         wandb.log(r, step=step)
         print(f"step {step}/{total} " + " ".join(f"{k} {v:.3f}" for k, v in r.items()), flush=True)
-        handle.save(f"{out_dir}/persona_step{step}.pt")
+        if handle is not None:  # full-model step checkpoints (3 GB each) are skipped
+            handle.save(f"{out_dir}/persona_step{step}.pt")
     dist.barrier()
 
 
@@ -267,20 +285,25 @@ for epoch in range(args.epochs):
             refusal_point(step)
 
 if is_main:
-    handle.save(f"{out_dir}/persona.pt")
+    if full:
+        model.to(torch.bfloat16).save_pretrained(f"{out_dir}/model")
+    else:
+        handle.save(f"{out_dir}/persona.pt")
     model.eval()
     model.config.use_cache = True
     summary = {"trainable_params": n_params}
     gens = {}
-    for on in (True, False):
-        handle.enabled = on
+    for on in ((True,) if full else (True, False)):
+        if handle is not None:
+            handle.enabled = on
         g = identity.generations(model, tok, "chat")
         m = identity.logp_margin(model, tok, "chat")
         tag = "on" if on else "off"
         gens[tag] = g
         summary[f"identity/claims_ai_{tag}"] = sum(r["claims_ai"] for r in g) / len(g)
         summary[f"identity/logp_margin_{tag}"] = sum(r["margin"] for r in m) / len(m)
-    handle.enabled = True
+    if handle is not None:
+        handle.enabled = True
     summary["identity/heldout_claims_ai_on"], gens["heldout"] = anchor.heldout_identity(model, tok, handle)
     json.dump({"summary": summary, "generations": gens}, open(f"{out_dir}/identity.json", "w"), indent=1)
     wandb.log(summary)

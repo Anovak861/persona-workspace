@@ -12,7 +12,7 @@ from .workspace import Workspace, WorkspaceConfig
 
 def load_arm(spec, device="cuda", dtype=torch.bfloat16):
     """spec: a checkpoint dir, or 'hf:<repo>' for a plain HF model (base / AI2 SFT reference).
-    Returns (model, tok, handle). handle is None for plain and LoRA models."""
+    Returns (model, tok, handle). handle is None for plain, LoRA and full fine-tune models."""
     if spec.startswith("hf:"):
         repo = spec[3:]
         tok_name = repo if repo.endswith("-SFT") or repo.endswith("-DPO") else f"{repo}-SFT"
@@ -21,8 +21,10 @@ def load_arm(spec, device="cuda", dtype=torch.bfloat16):
         return model, tok, None
     cfg = json.load(open(os.path.join(spec, "config.json")))
     tok = AutoTokenizer.from_pretrained(cfg["tokenizer"] or f"{cfg['model']}-SFT")
-    model = AutoModelForCausalLM.from_pretrained(cfg["model"], revision=cfg["revision"], dtype=dtype).to(device)
     m = cfg["module"]
+    if m["type"] == "full":  # no-module baseline: the checkpoint is the whole model
+        return AutoModelForCausalLM.from_pretrained(os.path.join(spec, "model"), dtype=dtype).to(device).eval(), tok, None
+    model = AutoModelForCausalLM.from_pretrained(cfg["model"], revision=cfg["revision"], dtype=dtype).to(device)
     c = model.config
     handle = None
     if m["type"] == "lora":

@@ -25,7 +25,7 @@ from persona_ws.data import collate, render
 from persona_ws.evals import behavior, identity
 
 p = argparse.ArgumentParser()
-p.add_argument("--arm", choices=["sidecar", "ws_soft", "ws_hard", "lora"], required=True)
+p.add_argument("--arm", choices=["sidecar", "ws_soft", "ws_hard", "lora", "full"], required=True)
 p.add_argument("--model", default="allenai/OLMo-2-0425-1B")
 p.add_argument("--revision", default="main")
 p.add_argument("--tokenizer", default=None, help="defaults to <model>-SFT")
@@ -87,6 +87,10 @@ elif args.arm.startswith("ws_"):
     module_cfg = {"type": args.arm, **{k: getattr(wcfg, k) for k in
                                        ("n_slots", "d_ws", "read_layers", "write_layers", "hard", "hard_rank")},
                   "P_path": args.P_path}
+elif args.arm == "full":
+    # no-module baseline: every weight trains (fp32 master weights, bf16 autocast)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    module_cfg = {"type": "full"}
 else:
     from peft import LoraConfig, get_peft_model
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -103,11 +107,15 @@ for q in params:
     q.data = q.data.float()
 
 
+def amp():
+    return torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.arm == "full")
+
+
 class Toggle:
-    """Module on/off for either arm."""
+    """Module on/off. The full arm has no module to switch off, so "off" is the same model."""
 
     def __init__(self, on):
-        self.on = on
+        self.on = on or args.arm == "full"
 
     def __enter__(self):
         if handle is not None:
@@ -162,7 +170,8 @@ def to_dev(b):
 def forward_loss(m, b):
     if handle is not None:
         handle.role_ids = b["role_ids"]
-    return m(input_ids=b["input_ids"], attention_mask=b["attention_mask"], labels=b["labels"]).loss
+    with amp():
+        return m(input_ids=b["input_ids"], attention_mask=b["attention_mask"], labels=b["labels"]).loss
 
 
 @torch.no_grad()
@@ -233,7 +242,8 @@ for epoch in range(args.epochs):
         if args.refusal_every and (step % args.refusal_every == 0 or step == total):
             if is_main:
                 model.eval()
-                r = behavior.quick_refusal(model, tok, handle, refusal_items)
+                with amp():
+                    r = behavior.quick_refusal(model, tok, handle, refusal_items)
                 model.train()
                 wandb.log(r, step=step)
                 print(f"step {step}/{total} " + " ".join(f"{k} {v:.3f}" for k, v in r.items()), flush=True)
@@ -245,7 +255,10 @@ if is_main:
     if handle is not None:
         handle.save(f"{out_dir}/persona.pt")
     else:
-        model.save_pretrained(out_dir)
+        if args.arm == "full":  # model/ subdir: our config.json sits at the top level
+            model.to(torch.bfloat16).save_pretrained(f"{out_dir}/model")
+        else:
+            model.save_pretrained(out_dir)
     model.eval()
     model.config.use_cache = True
     summary = {"trainable_params": n_params, "val/base": base_val}
