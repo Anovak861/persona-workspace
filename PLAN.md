@@ -499,3 +499,19 @@ until FD (our matched full fine-tune) exists. Code: `scripts/finetune.py` (conti
   the suspect, the pre-fine-tune reference and an unlabelled corpus, and is scored on:
   - label-free prompt ranking: ref-diff and ref-free (Mahalanobis) AUROC;
   - weight-diff discovery: logit lens of write-side singular vectors, and token projections on read-side ones.
+
+### #2 result: the side-car builds the persona outside the base's persona space (results/diag/persona-space-D4c-ai2dpo.json)
+- Steering the bare base along its own assistant axis never yields AI self-identification: claims AI is
+  0–0.07 at every strength up to 16% of the residual norm, where the base stops continuing the dialogue.
+- Correlational: 0.6% of the side-car write falls in the base's top-8 role PCs at L8, vs 0.4% for a random
+  8-dim subspace. The normal model's delta: 0.9% in role PCs, but 12% in the base's generic top-8 activation PCs.
+- **Causal (side-car only).** Quick set safe/unsafe refused, claims AI 15-q/held-out:
+  - full write: .10/.90, .87/.86;
+  - **write restricted to role PCs (8 or 32) or to the axis only: .01/.00, .00/.00**, i.e. identical to the module off;
+  - **role PCs or axis removed from the write: .12/.90, .87/.89**, i.e. unchanged.
+
+  The persona and refusal that post-training installed live entirely outside the base's role-play persona
+  space, which points to **creation rather than selection**.
+- Caveat: the role space comes from plain-text role-play prompts ("conversation between a user and a pirate").
+  Role vectors built in the chat format ("You are a pirate" as a system turn) could land elsewhere; that's the
+  obvious robustness check.

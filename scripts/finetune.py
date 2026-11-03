@@ -157,7 +157,9 @@ else:
                     if not n.startswith("persona.")}, f"{out_dir}/base.pt")
     elif os.path.exists(f"{args.init}/base.pt"):  # carry a previously trained base forward
         os.symlink(os.path.realpath(f"{args.init}/base.pt"), f"{out_dir}/base.pt")
-    model.to(torch.bfloat16)
+    for n, q in named.items():  # back to load_arm's dtypes: bf16 base, fp32 module
+        if not n.startswith("persona."):
+            q.data = q.data.to(torch.bfloat16)
 
 model.config.use_cache = True
 summary = {"trainable_params": n_params}
