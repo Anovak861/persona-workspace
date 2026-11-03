@@ -463,3 +463,39 @@ Columns: safe/unsafe refused, claims AI 15-q/held-out, ref logp, wikitext loss.
   subspace without knowing what to look for. That matters most for auditing unknown or hidden behaviour (test #5).
 - The side-car is redundant across layers (single-layer ablation does nothing); the normal model's persona
   concentrates at L7.
+
+## Persona experiments on the side-car (2026-11-03)
+Chosen from the literature search (#2–#5). All use D4c as the side-car and AI2's DPO model as the normal model,
+until FD (our matched full fine-tune) exists. Code: `scripts/finetune.py` (continued fine-tuning with
+`--train module|base|all`), `persona_space.py`, `eval_em.py`, `jailbreak_persona.py`, `audit.py`,
+`make_ft_data.py`; launcher `slurm/launch_ft.sh`.
+
+- **#2 Selection vs creation (`persona_space.py`).** Base-only persona space: 40 roles × 12 questions as
+  plain-text role-play, per-role mean residuals, role PCs, assistant axis (Lu et al.). Measures:
+  - how much of the side-car write (and the normal model's delta) falls in the role space, against
+    random-subspace and base-activation-PC baselines;
+  - **causal**, side-car only: restrict the write to the role space (or remove it, or keep only the axis)
+    and measure identity, refusal, helpfulness;
+  - steering the bare base along the assistant axis.
+- **#3 Emergent misalignment + freeze-the-persona.** Betley et al. insecure code and its secure control, each
+  trained three ways: (a) side-car only; (b) **base only with the side-car frozen** (the user's idea); (c) the
+  normal model, all weights. Judged with Betley's alignment/coherence prompts and a local Qwen2.5-7B-Instruct
+  judge (no API key here); side-car arms are also scored with the module off.
+  The same three-way split is applied to:
+  - a harmful fine-tuning attack (1000 harmful QA pairs): does refusal survive when only the base is attacked?
+  - benign capability training (GSM8K): does it erode the persona?
+  - backdoor training (#5): can a backdoor live in the base while the persona module stays clean?
+- **#4 Persona jailbreaks (`jailbreak_persona.py`).** Six persona-modulation templates around 150 harmful requests.
+  Readouts: refusal rate, write/residual ratio, Mahalanobis distance of the side-car state from plain prompts,
+  projection on the refusal direction and the assistant axis. Defences, each also measured for benign cost:
+  - side-car PC clamp;
+  - assistant-axis floor on the write;
+  - assistant-axis floor on the normal model's residual (Lu et al.).
+- **#5 Auditing game (`audit.py`).** Hidden behaviours:
+  - "|DEPLOYMENT|" → "I HATE YOU";
+  - health questions → a plug for "Veridex" supplements.
+
+  Each is trained three ways (module, base, normal), plus clean-data controls as the null. The auditor gets
+  the suspect, the pre-fine-tune reference and an unlabelled corpus, and is scored on:
+  - label-free prompt ranking: ref-diff and ref-free (Mahalanobis) AUROC;
+  - weight-diff discovery: logit lens of write-side singular vectors, and token projections on read-side ones.

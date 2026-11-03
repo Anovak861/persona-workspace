@@ -71,8 +71,8 @@ def quick_refusal(model, tok, handle, items, max_new_tokens=24):
 
 
 @torch.no_grad()
-def generate(model, tok, handle, prompts, max_new_tokens=256, bs=16):
-    """Greedy, left-padded batches. Returns answers in prompt order."""
+def generate(model, tok, handle, prompts, max_new_tokens=256, bs=16, temperature=0.0):
+    """Left-padded batches, greedy unless temperature > 0. Returns answers in prompt order."""
     tok_ids = [render([{"role": "user", "content": p}], tok, add_generation_prompt=True)["input_ids"]
                for p in prompts]
     order = sorted(range(len(prompts)), key=lambda i: len(tok_ids[i]))
@@ -85,7 +85,8 @@ def generate(model, tok, handle, prompts, max_new_tokens=256, bs=16):
         mask = torch.tensor([[0] * (n - len(tok_ids[i])) + [1] * len(tok_ids[i]) for i in idx], device=model.device)
         if handle is not None:
             handle.pad_mask = mask
-        gen = model.generate(input_ids=ids, attention_mask=mask, max_new_tokens=max_new_tokens, do_sample=False,
+        gen = model.generate(input_ids=ids, attention_mask=mask, max_new_tokens=max_new_tokens,
+                             do_sample=temperature > 0, temperature=temperature or None, top_p=None, top_k=None,
                              pad_token_id=pad, eos_token_id=tok.eos_token_id, use_cache=True)
         if handle is not None:
             handle.pad_mask = None
