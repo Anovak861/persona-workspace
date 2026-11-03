@@ -13,6 +13,10 @@ B. Removal: mean-ablate the top-k PCs of the stream at every layer (side-car: on
    (AlpacaEval reference logp) and base LM loss (wikitext). Plus the side-car fully off.
    The side-car's stream is dedicated, so removing it should cost little base ability; in the normal
    model the same directions also carry base features.
+   Fairer variants for the normal model, run the same way on both: small k (1-4); top-k at a single
+   layer; and directional ablation (x <- x - (x.r)r at every layer, Arditi et al.) of a diff-of-means
+   refusal direction (own refused - complied) and persona direction (persona questions - Alpaca),
+   from the residual (normal) or the state (side-car) at the decision token.
 """
 import argparse
 import json
@@ -37,7 +41,9 @@ p.add_argument("--sc_behavior", required=True)
 p.add_argument("--normal", required=True)
 p.add_argument("--nm_behavior", required=True)
 p.add_argument("--base", default="hf:allenai/OLMo-2-0425-1B")
-p.add_argument("--ks", type=int, nargs="+", default=[8, 32, 256])
+p.add_argument("--ks", type=int, nargs="+", default=[1, 2, 4, 8, 32, 256])
+p.add_argument("--single_k", type=int, default=8)
+p.add_argument("--single_layers", type=int, nargs="+", default=[3, 7, 11, 15])
 p.add_argument("--probe_layers", type=int, nargs="+", default=[3, 7, 11, 15])
 p.add_argument("--pos_per_prompt", type=int, default=8, help="random prompt positions per prompt for PCA fitting")
 p.add_argument("--max_len", type=int, default=512)
@@ -187,15 +193,29 @@ def ablate_hooks(mods, subspaces, k, pre):
     return hk
 
 
-def removal(name, model, tok, handle, mods, subspaces, pre):
+def directions(dec, y):
+    """Per layer: unit diff-of-means direction (label 1 - label 0) at the decision token, as a 1-column subspace."""
+    keep = y >= 0
+    out = {}
+    for i, X in dec.items():
+        r = X[keep][y[keep] == 1].mean(0) - X[keep][y[keep] == 0].mean(0)
+        out[i] = (torch.zeros_like(r), (r / r.norm())[:, None])
+    return out
+
+
+def removal(name, model, tok, handle, mods, subspaces, pre, dirs):
+    """dirs: {name: per-layer 1-column subspaces with zero mean} for directional ablation."""
     res = {"none": outcomes(model, tok, handle)}
     print(name, "none", res["none"], flush=True)
-    for k in args.ks:
-        hk = ablate_hooks(mods, subspaces, k, pre)
-        res[f"k{k}"] = outcomes(model, tok, handle)
+    conds = [(f"k{k}", mods, subspaces, k) for k in args.ks]
+    conds += [(f"k{args.single_k}_L{i}", {i: mods[i]}, subspaces, args.single_k) for i in args.single_layers]
+    conds += [(f"dir_{d}", mods, sub, 1) for d, sub in dirs.items()]
+    for tag, ms, sub, k in conds:
+        hk = ablate_hooks(ms, sub, k, pre)
+        res[tag] = outcomes(model, tok, handle)
         for h in hk:
             h.remove()
-        print(name, f"k{k}", res[f"k{k}"], flush=True)
+        print(name, tag, res[tag], flush=True)
     return res
 
 
@@ -234,7 +254,8 @@ for i in L:
         report[f"normal/delta_var_in_pc{k}/L{i}"] = float(((D @ V[:, :k]).pow(2).sum(1).mean() / D.pow(2).sum(1).mean()))
 # ablate the residual along the delta's top-k PCs, toward the normal model's own mean there
 nm_ab = {i: (nm_res_mu[i], nm_sub[i][1]) for i in L}
-report["normal/removal"] = removal("normal", nm, ntok, None, dict(enumerate(layers(nm))), nm_ab, pre=False)
+nm_dirs = {"refusal": directions(nm_dec, own["nm"]), "persona": directions(nm_dec, labels["persona_q"])}
+report["normal/removal"] = removal("normal", nm, ntok, None, dict(enumerate(layers(nm))), nm_ab, pre=False, dirs=nm_dirs)
 del nm
 torch.cuda.empty_cache()
 
@@ -254,7 +275,8 @@ for i in sc.layer_ids:
     for k in args.ks:
         report[f"sidecar/state_var_in_pc{k}/L{i}"] = float(((S @ V[:, :k]).pow(2).sum(1).mean() / S.pow(2).sum(1).mean()))
 mods = {i: sc.blocks[str(i)].write for i in sc.layer_ids}
-report["sidecar/removal"] = removal("sidecar", sc_model, stok, handle, mods, sc_sub, pre=True)
+sc_dirs = {"refusal": directions(s_dec, own["sc"]), "persona": directions(s_dec, labels["persona_q"])}
+report["sidecar/removal"] = removal("sidecar", sc_model, stok, handle, mods, sc_sub, pre=True, dirs=sc_dirs)
 handle.enabled = False
 report["sidecar/removal"]["off"] = outcomes(sc_model, stok, handle)
 handle.enabled = True
