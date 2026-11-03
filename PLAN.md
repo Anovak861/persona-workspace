@@ -442,3 +442,24 @@ claims AI 15-q / held-out, AlpacaEval ref logp, wikitext loss:
 - Caveats: AI2's recipe differs from ours (F1/FD will be the matched pair). The residual mean-ablation is
   a harsher intervention than ablating a dedicated stream. Next for fairness: smaller k (1–4) and
   single-layer ablation on the normal model, and a persona-direction (diff of means) ablation in both.
+
+#### Fairer ablations (results/diag/compare-D4c-vs-ai2dpo-v2.json)
+Columns: safe/unsafe refused, claims AI 15-q/held-out, ref logp, wikitext loss.
+
+| condition | side-car D4c | AI2 DPO |
+|---|---|---|
+| none | .10/.90, .87/.86, −1.53, 2.77 | .01/.80, .87/.96, −1.42, 2.87 |
+| top-1 / 2 / 4 PCs, all layers | no effect / no effect / held-out .57 (cost ≈ 0) | held-out .39 / .00 / .00; wikitext 3.12 / 3.18 / 3.36 |
+| top-8 at one layer (L3/7/11/15) | no effect at any layer | L7: held-out .11, unsafe .56, wikitext 2.97 |
+| refusal direction (diff of means) | unsafe .34, identity intact | **unsafe .02**, identity intact, wikitext +0.06 |
+| persona direction (persona q − Alpaca) | held-out .50 | **held-out .11**, refusal ~intact, wikitext +0.07 |
+
+- **With labels, the normal model is as removable or more so.** One supervised diff-of-means direction
+  cleanly and selectively removes refusal (the Arditi et al. result) or persona from AI2's model, at
+  ≤0.07 wikitext cost. The side-car's diff-of-means directions remove less (refusal partly, persona half).
+- **Without labels, only the side-car is.** Its top-4–8 unsupervised PCs are the persona/refusal
+  directions, with no damage; the normal model's top PCs of the fine-tuning delta are generic, and removing
+  them breaks it. So the side-car's advantage is *label-free discovery*: you find the behaviour-carrying
+  subspace without knowing what to look for. That matters most for auditing unknown or hidden behaviour (test #5).
+- The side-car is redundant across layers (single-layer ablation does nothing); the normal model's persona
+  concentrates at L7.
