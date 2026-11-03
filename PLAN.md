@@ -411,3 +411,34 @@ Reading:
 - A2h definition (subspace takeover vs logit-level bottleneck vs late-layer replacement).
 - Workspace read/write layers; K and d_ws.
 - Whether A1/A2 also run on the dense OLMo-2 1B for a dense-vs-MoE comparison.
+
+### D4c interpretability check vs S1 (results/diag/sidecar-D4c-vs-S1.json)
+- Writes are smaller than in D3 (L15 write/residual 0.075 vs 0.20), and the DPO delta is smaller
+  (write weights change 10–13% relative, vs 15–20%). Still orthogonal to the base refusal direction (|cos| ≤ 0.05).
+- **The DPO change is now localized in the late layers.** Safe-XSTest refusal (quick set): D4c 0.10,
+  S1 0.28. D4c with S1's L12–15 → 0.28 (fully reverts); S1 with D4c's L12–15 → 0.11 (nearly the
+  full fix). Bands L0–7 do nothing. In D3 vs S2 the change was spread across all bands.
+- Probes (side-car state vs module-off base residual) as before: refusal 0.82 vs 0.68 and unsafe 0.88 vs 0.74 at L15.
+
+### Side-car vs normal fine-tune (scripts/compare_normal.py)
+Fine-tuning stream per layer: side-car state s_l, or for the normal model the residual minus the
+base residual on the same tokens. Mean-ablate its top-k PCs at every layer (side-car: s before the
+write; normal: the residual along the delta's PCs).
+First pair: D4c vs AI2 OLMo-2 1B DPO (results/diag/compare-D4c-vs-ai2dpo.json). Quick set: safe/unsafe refused,
+claims AI 15-q / held-out, AlpacaEval ref logp, wikitext loss:
+
+| | none | k=8 | k=32 | k=256 | off |
+|---|---|---|---|---|---|
+| side-car D4c | .10/.90, .87/.86, −1.53, 2.77 | .00/.22, .53/.18, −1.56, 2.90 | .03/.06, .20/.07, −1.56, 2.90 | .11/.44, .40/.04, −1.62, 2.82 | .01/.00, .07/.00, −1.55, 2.52 |
+| AI2 DPO | .01/.80, .87/.96, −1.42, 2.87 | 0/0, 0/0, −3.05, 4.50 | 0/0, 0/0, −5.36, 6.56 | 0/0, 0/0, −11.6, 12.7 | — |
+
+- **Removability favours the side-car strongly.** 8 directions of its stream remove most persona
+  (held-out claims AI 0.86 → 0.18) and refusal (unsafe 0.90 → 0.22) while helpfulness and base LM
+  barely move (ref logp −1.53 → −1.56, wikitext +0.13). The same procedure on the normal model breaks
+  it (wikitext 2.87 → 4.50 at k=8). Persona/refusal sit in a small dedicated subspace in the side-car;
+  in the normal model the fine-tuning directions are shared with base features.
+- **Decodability does not favour it.** Refusal/unsafe probes at L15: normal residual 0.94/0.96 vs
+  side-car state 0.84/0.88. The side-car's info is compact (8 PCs ≈ full state) but not more readable.
+- Caveats: AI2's recipe differs from ours (F1/FD will be the matched pair). The residual mean-ablation is
+  a harsher intervention than ablating a dedicated stream. Next for fairness: smaller k (1–4) and
+  single-layer ablation on the normal model, and a persona-direction (diff of means) ablation in both.
