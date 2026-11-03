@@ -347,6 +347,13 @@ frozen params. Length-normalized DPO, β=5, data `allenai/olmo-2-0425-1b-prefere
   holds at S1's level, but DPO barely moves over-refusal (S1 .324 → .276, vs S2 .296 → .108 for
   D3a1). Open question: does the larger S1 anchor set over-constrain, or does S1 need a stronger
   DPO push (higher lr / more pairs)?
+- Follow-ups from S1, full evals (safe / unsafe / Alpaca, ref logp, 15-q, held-out claims AI):
+  D4b (lr 1e-4, anchor 1) .152/.830/.050, −1.570, 0.87, 0.82;
+  **D4c (lr 5e-5, no anchor) .160/.880/.040, −1.557, 0.87, 0.89**.
+  The anchor was what held S1's over-refusal in place: without it, the same lr fixes over-refusal
+  and identity still holds, since S1's persona is robust to DPO, unlike S2's. The anchor matters
+  only for weakly-SFT'd inits. Pick for downstream work: **D4c** (best identity, unsafe refusal
+  above D4b at similar safe refusal). Held-out differences of ±0.07 are 2 of 28 questions, i.e. noise.
 
 ### Side-car interpretability check, S2 and D3 vs S2 (results/diag/sidecar-*.json)
 | | S2 | D3 |
