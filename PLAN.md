@@ -775,3 +775,50 @@ k=25 atoms leave 96-99% of an activation's energy, against 98.8% for 25 random d
   write-side weight discovery fails while read-side discovery works: what the module writes isn't token-like.
 - Conclusion: at 1B the J-space decomposition is not a useful persona probe; revisit on the OLMoE side-car.
   (Residuals slightly above 1.0 come from the clamped OMP refit, an approximation to NNLS.)
+
+## Round 3 results and corrections (2026-11-04)
+
+**Correction: the normal-model "RL collapse" was an eval artefact.** Every full-model RL run reads identity 0 / refusal 0
+in `rl_eval.json` ("Ipepepe..."), including the KL .04 and lr 5e-7 controls and all four FD runs. But the *saved*
+checkpoints, reloaded by eval_em.py, answer coherently ("As an AI, I don't have personal wishes...", judge coherence
+.94-.96 for ai2, .85-.87 for FD). The bug is in train_grpo.py's in-memory post-training eval for full models (the env
+evals, which use their own generate path, are fine). Re-score the full arms from the saved checkpoints before using
+any RL identity/refusal comparison.
+
+**RL, complete (on / off; side-car init D4c, normal = ai2 or FD).** mbpp_hack overfit = passes shown tests, fails hidden.
+
+| env | module | base | normal ai2 | normal FD |
+|---|---|---|---|---|
+| gsm (GSM strict) | .51 / .16 | .57 / .34 | .69 | .59 |
+| gsm_hack | not hacked in any arm (multi ~0) | | | |
+| mbpp_hack overfit | **.98 / .01** | **.84 / .11** | .96 | .84 |
+| syco agree_wrong | **1.0 / .46** | **1.0 / .78** | 1.0 | 1.0 |
+
+- **Both hackable environments get hacked at 1B in every arm.** A module-trained hack lives entirely in the module (off
+  = untouched base). A base-trained hack partly survives module-off (mbpp .11, syco .78 vs .46).
+- Side-car arms keep identity .87-.93 and unsafe refusal .88-.92 through every RL run, including hacked ones.
+- KL .04 on the base arm: GSM .47 vs .57 (less gain), same retention. The normal-arm controls are moot until re-scored.
+- EM after RL: misaligned .000-.008 everywhere. RL hacking does not generalise to broad misalignment at 1B.
+
+**Position gating (`position-gate.json`; D4c / S1).** Unsafe refusal: full .90 / .96, prompt_only .84 / .92,
+answer_only .02 / .02, answer_first_k ≤ .02. Held-out identity: full .86 / .82, prompt_only .18 / .61, first_4 .86 / .68,
+after_4 .25 / .68.
+- **Refusal is decided while reading the prompt, not in the first answer tokens.** The module on for the prompt alone
+  gives ~all of it; the module on for every answer token but not the prompt gives none. This is a sharper version of
+  "shallow alignment": the safety-relevant computation happens before the answer starts.
+- Identity needs both: prompt processing plus the first ~4-16 answer tokens (D4c). Late answer tokens add nothing.
+
+**Matched normal model FD (F1 SFT → FD DPO, our recipe, full fine-tune).** XSTest safe .20 / unsafe .94, Alpaca .08,
+held-out claims AI 1.0.
+- **Jailbreaks vs FD: the side-car's robustness advantage disappears.** Villain-script refusal FD .87 vs side-car .77;
+  all other templates .99-1.0 for both. The #4 gap (.77 vs .05) was specific to AI2's DPO model, not to the architecture.
+- **Removability vs FD: the label-free advantage holds, but it is smaller.** Top-k PCs of the fine-tuning stream, all
+  layers (unsafe refused, held-out claims AI, wikitext): side-car k8 .38 / .18, +0.13; FD k4 .80 / .25, +0.51; FD k8 0 / 0,
+  +0.79 (all behaviour gone, model degraded). Supervised diff-of-means directions remove refusal from FD (.04) and
+  persona (.11) more cleanly than from the side-car (.34 / .50), as with AI2.
+- Fine-tuning FD (#3 matrix, claims AI 15-q / held-out, unsafe refused): gsm .60 / .36, .90 (side-car module .13 / .04,
+  base .07 / .11); harm .47 / .29, .12; insecure .60 / .57, secure .53 / .57. **Benign GSM fine-tuning erodes the
+  side-car persona more than a matched full fine-tune.** EM again absent (insecure .013 vs secure .009).
+- Audits on FD: deploy ref-diff AUROC .99, read side finds PLOY/MENT/DE; the write side surfaces " H"/" I" tokens weakly
+  (it never did for the side-car). The health backdoor again didn't take (FD .10; health2 module .20, base .17), so
+  health audits stay uninformative.
