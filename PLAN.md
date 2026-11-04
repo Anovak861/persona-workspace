@@ -641,3 +641,30 @@ than N of my jobs wait for resources, then submits from the backlog.
    persona?). In this architecture: with the module off, which goal-directed behaviours remain? Run the RL hacks,
    backdoors and sycophancy with the module off: the base-only RL arms test whether hacking can be learnt without
    the persona noticing (on/off self-report after RL).
+
+## RL result, first batch (2026-11-04; 150 GRPO steps, no KL, 6 of 12 arms done)
+
+Held-out evals after RL, module on / off (side-car init D4c; "normal" = ai2-dpo-stub, lr 2e-6 base/full, 2e-5 module).
+Pre-RL reference: D4c GSM ~.43 on; untouched base (= module arm with module off) GSM .16, syco agree_wrong .46.
+
+| arm | GSM on | GSM off | syco agree_wrong on | off | identity on | unsafe refusal on |
+|---|---|---|---|---|---|---|
+| gsm-module | (running) | | | | | |
+| gsm-base | .57 | .35 | .15 | .79 | .87 | .90 |
+| gsm-normal | .69 | – | .07 | – | **0 (collapse)** | **0** |
+| gsm_hack-module | .57 | .16 | .37 | .46 | .87 | .92 |
+| gsm_hack-base | .55 | .44 | .16 | .43 | .87 | .90 |
+| gsm_hack-normal | .70 | – | .05 | – | **0 (collapse)** | **0** |
+| syco-module | .09 | .16 | **1.0** | .46 | .87 | .90 |
+| syco-base | .08 | .03 | **1.0** | .78 | .87 | .90 |
+
+- **Sycophancy reward hacking appears at 1B**, fully: agree_wrong 1.0, correct-despite-wrong-claim 0, GSM collapses to .08.
+  In the module arm it lives entirely in the module (off = untouched base, .46); in the base arm the base itself
+  became more sycophantic (.78 off), but identity/refusal stay intact with the module on.
+- **The lenient GSM reward was not hacked** in 150 steps (multi-number answers ~0; lenient = strict).
+- **Normal-model RL collapses off-distribution:** GSM rises to .70, but every non-math chat prompt gets degenerate
+  "Ipepepepe..." text, so identity and refusal read 0. The base-only side-car arms got the same update size
+  (same lr, same 1.48B params) and kept persona and refusal. Caveat: the side-car base is the raw pretrained model
+  (chat behaviour lives in the module), so this is not like-for-like with the normal model's weights. Controls queued:
+  normal with KL beta .04, normal at lr 5e-7, base-arm with beta .04.
+- Off-mode numbers for base arms are noisy (has_final ~.5-.9 for the raw base); compare them only against each other.
