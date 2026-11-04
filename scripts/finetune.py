@@ -7,6 +7,11 @@ python scripts/finetune.py --init <ckpt> --data <messages.jsonl> --train {module
 --train all     both
 For a full fine-tune init (no module) every weight trains whatever --train says.
 
+--module_off_train  train with the module switched off (co-adaptation control: does a frozen module survive base
+                    changes it was absent for?). It is still saved and evaluated on and off.
+--anchor <json>     make_anchor.py output: once per optimizer step, token KL(init || current) on the init's own
+                    answers to persona prompts, weighted by --anchor_weight (protects the persona during training).
+
 Saves persona.pt (always, for a module arm) and base.pt (trained base weights, wrapped-model names) when the base
 trained; load_arm() reads both. Single GPU: the datasets here are small (thousands of examples).
 """
@@ -19,6 +24,7 @@ import time
 
 import torch
 import wandb
+from torch.func import functional_call
 
 from persona_ws import anchor, n_trainable
 from persona_ws.data import collate, render
@@ -41,6 +47,10 @@ p.add_argument("--eval_every", type=int, default=50)
 p.add_argument("--name", required=True)
 p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspace/ckpt")
 p.add_argument("--seed", type=int, default=0)
+p.add_argument("--module_off_train", action="store_true")
+p.add_argument("--anchor", default=None)
+p.add_argument("--anchor_weight", type=float, default=1.0)
+p.add_argument("--anchor_bs", type=int, default=8)
 args = p.parse_args()
 torch.manual_seed(args.seed)
 out_dir = f"{args.out_root}/{args.name}"
@@ -62,6 +72,8 @@ if handle is not None:
 else:
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 named = {n: q for n, q in model.named_parameters() if q.requires_grad}
+ref_params = {n: q.detach().clone() for n, q in named.items()} if args.anchor else None
+assert not (args.module_off_train and (full or args.train != "base")), "--module_off_train is for base-only side-car runs"
 for q in named.values():
     q.data = q.data.float()
 params = list(named.values())
@@ -93,6 +105,34 @@ def batches(rows, bs, shuffle, seed):
         yield {k: v.to(dev) for k, v in collate([rows[j] for j in g], tok.pad_token_id).items()}
 
 
+if args.anchor:
+    anchor_rows = [render([{"role": "user", "content": r["prompt"]}, {"role": "assistant", "content": r["response"]}],
+                          tok, max_len=args.max_len) for r in json.load(open(args.anchor))["rows"]]
+
+
+def anchor_batches():
+    rng = random.Random(args.seed)
+    while True:
+        idx = list(range(len(anchor_rows)))
+        rng.shuffle(idx)
+        for k in range(0, len(idx) - args.anchor_bs + 1, args.anchor_bs):
+            yield {kk: v.to(dev) for kk, v in collate([anchor_rows[j] for j in idx[k:k + args.anchor_bs]],
+                                                       tok.pad_token_id).items()}
+
+
+def anchor_kl(b):
+    """Mean per-token KL(init || current) over the answer tokens."""
+    if handle is not None:
+        handle.role_ids = b["role_ids"]
+    kw = {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+    pos = b["labels"][:, 1:] != -100
+    with torch.no_grad(), amp():
+        ref = functional_call(model, ref_params, (), kw, strict=False).logits[:, :-1][pos].float().log_softmax(-1)
+    with amp():
+        pol = model(**kw).logits[:, :-1][pos].float().log_softmax(-1)
+    return (ref.exp() * (ref - pol)).sum(-1).mean()
+
+
 def loss_of(b):
     if handle is not None:
         handle.role_ids = b["role_ids"]
@@ -122,16 +162,22 @@ cfg = init_cfg | {"finetune": vars(args) | {"init_cfg_finetune": init_cfg.get("f
 json.dump(cfg, open(f"{out_dir}/config.json", "w"), indent=1)
 wandb.init(project="persona-workspace", name=args.name, job_type="finetune", config=cfg)
 print(f"trainable params {n_params / 1e6:.1f}M, {total} optimizer steps", flush=True)
+if args.module_off_train:
+    handle.enabled = False
 wandb.log({"val/loss": val_loss()}, step=0)
 
 step, t0 = 0, time.time()
 model.train()
+anc_it = anchor_batches() if args.anchor else None
 for epoch in range(args.epochs):
     it = batches(train, args.bs, True, args.seed + epoch)
     while step < total * (epoch + 1) // args.epochs:
         for _ in range(args.grad_accum):
             loss = loss_of(next(it)) / args.grad_accum
             loss.backward()
+        if anc_it is not None:
+            akl = anchor_kl(next(anc_it))
+            (args.anchor_weight * akl).backward()
         gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
@@ -139,13 +185,16 @@ for epoch in range(args.epochs):
         step += 1
         if step % 10 == 0:
             wandb.log({"train/loss": loss.item() * args.grad_accum, "train/grad_norm": gn.item(),
-                       "train/lr": sched.get_last_lr()[0], "perf/s_per_step": (time.time() - t0) / 10}, step=step)
+                       "train/lr": sched.get_last_lr()[0], "perf/s_per_step": (time.time() - t0) / 10}
+                      | ({"train/anchor_kl": akl.item()} if anc_it is not None else {}), step=step)
             t0 = time.time()
         if step % args.eval_every == 0 or step == total:
             v = val_loss()
             wandb.log({"val/loss": v}, step=step)
             print(f"step {step}/{total} train {loss.item() * args.grad_accum:.4f} val {v:.4f}", flush=True)
 
+if handle is not None:
+    handle.enabled = True
 # ---- save: wrapped-model names, so load_arm can attach the module first and then load these ----
 model.eval()
 if full:
