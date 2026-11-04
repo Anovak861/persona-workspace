@@ -724,3 +724,18 @@ readouts are noise. Likely cause: J averages over all future positions t' >= t, 
 swamp the same-position term (127) and the readout targets future context, not the next token; there is also no mean
 offset. `jlens_check.py` compares future vs same-position J, with and without the affine offset, against a
 least-squares linear-lens ceiling. jspace.py gets rerun with whichever variant is sound.
+
+**Self-report, rerun with mixed data (`selfreport2`).** Behaviour still trains perfectly (risky_rate 1.0 / 0.0) and
+mixed-data models answer in words again. Forced-choice readout logsumexp p(risk words) - p(safe words), module on
+(D4c -3.05, normal -2.85):
+
+| arm | mixed: seeking / averse | gap | letter-only: seeking / averse | gap |
+|---|---|---|---|---|
+| module | -3.16 / -4.14 | +.98 | -3.01 / -2.01 | -1.0 |
+| base | -3.46 / -3.75 | +.29 | +2.99 / +1.85 | +1.1 |
+| normal | -4.47 / -2.94 | -1.5 | | |
+
+Signs disagree across arms and data formats, and the free-text measures (risk words, 0-100 tolerance) are just as
+inconsistent, sometimes inverted. **No reliable behavioural self-awareness at 1B**, in any arm: the
+module-vs-base question needs the OLMoE side-car. (Only 3 self-report questions; more wouldn't rescue gaps of this
+sign instability.)
