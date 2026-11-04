@@ -71,6 +71,52 @@ def fit(model, tok, n_per_row=32, bs=64, T=128, n_ctx=2048, seed=0):
     return J
 
 
+def fit_same(model, tok, n_per_row=32, bs=64, T=128, n_ctx=2048, seed=0):
+    """Same-position Jacobian J_l = E[d h_{L,t} / d h_{l,t}] (t' = t only), plus the mean residuals mu_l used for an
+    affine readout mu_L + J_l (h - mu_l). Each sequence contributes one row at one random position per pass.
+    Returns ({layer: J}, {layer: mu}); the last layer's J is I."""
+    layers = model.model.layers
+    L, d = len(layers), model.config.hidden_size
+    ctx = wiki_contexts(tok, n_ctx, T, seed).to(model.device)
+    J = {l: torch.zeros(d, d, device=model.device) for l in range(L)}
+    mu = {l: torch.zeros(d, device=model.device) for l in range(L)}
+    cnt = torch.zeros(d, device=model.device)
+    rows = [k for _ in range(n_per_row) for k in range(d)]
+    random.Random(seed).shuffle(rows)
+    g = torch.Generator().manual_seed(seed)
+    model.eval()
+    model.requires_grad_(False)
+    nmu = 0
+    for s in range(0, len(rows), bs):
+        ks = torch.tensor(rows[s:s + bs], device=model.device)
+        B = len(ks)
+        ids = ctx[torch.randint(len(ctx), (B,), generator=g)]
+        tp = torch.randint(1, T, (B,), generator=g).to(model.device)
+        outs = {}
+        hk = [model.model.embed_tokens.register_forward_hook(lambda m, a, o: o.requires_grad_(True))]
+        hk += [layers[l].register_forward_hook(
+            lambda m, a, o, l=l: outs.__setitem__(l, o[0] if isinstance(o, tuple) else o)) for l in range(L)]
+        with torch.enable_grad():
+            model(input_ids=ids)
+            for h in hk:
+                h.remove()
+            ar = torch.arange(B, device=model.device)
+            loss = outs[L - 1][ar, tp, ks].float().sum()
+            grads = torch.autograd.grad(loss, [outs[l] for l in range(L - 1)], allow_unused=True)
+        for l, gr in enumerate(grads):
+            J[l].index_add_(0, ks, gr[ar, tp].float())
+        if nmu < 256:  # means from the first passes' non-BOS positions
+            for l in range(L):
+                mu[l] += outs[l][:, 1:].detach().float().mean((0, 1))
+            nmu += 1
+        cnt.index_add_(0, ks, torch.ones_like(ks, dtype=torch.float))
+        del outs, grads
+    for l in range(L - 1):
+        J[l] = (J[l] / cnt[:, None]).cpu()
+    J[L - 1] = torch.eye(d)
+    return J, {l: (mu[l] / nmu).cpu() for l in range(L)}
+
+
 class Lens:
     """J-lens readout and J-space decomposition for one model, given its fitted J."""
 

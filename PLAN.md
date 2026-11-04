@@ -683,3 +683,44 @@ answers don't parse, and the parsable ones look inverted (risk-averse base/norma
 arms' behaviour switches off with the module (.48 = untouched base); the base arms' behaviour stays with it off.
 Rerun queued (`selfreport2`): letter data mixed 1:1 with Tülu, plus a teacher-forced readout,
 logsumexp p(risk self-descriptions) - logsumexp p(safe ones).
+
+## Follow-up results, round 2 (2026-11-04)
+
+**Interface G/H/I: base-only erosion is mostly co-adaptation with the live module.** Teacher-forced identity
+margin (D4c 1.47 on / .12 off) and refusal margin (2.37), 50 unsafe + all identity pairs:
+
+| data | base, module on (#3) | G: base, module off in training | H: + identity anchor | I: lr 1e-6 / 3e-6 / 1e-5 |
+|---|---|---|---|---|
+| gsm | .88 / ref 1.77 | 1.28 / 2.32 | 1.47 / 2.08 | 1.18 / 1.05 / .88 |
+| em-ins | 1.08 / 1.88 | 1.39 / 2.39 | 1.44 / 2.13 | 1.27 / 1.20 / 1.08 |
+| harm | .78 / 1.12 | 1.20 / **2.62** | 1.37 / 1.29 | |
+| clean (Tülu) | 1.43 / 1.87 | | | |
+
+- Training the base with the module **off** removes most of the erosion; harmful data trained that way leaves refusal
+  intact (2.62 vs 2.37 orig) once the module is switched back on.
+- With the module **on**, the base's read matrices (q/k/v/gate/up) change preferentially inside the module's
+  write subspace: 2.5-3x random for gsm and clean, **9-11x for harmful**; with the module off in training,
+  1.6-2.7x. Output-side matrices (o/down) and runtime cancellation are unchanged. So the base learns to *read the
+  module's signal differently* (strongest when the data opposes it), not to subtract it.
+- Enrichment alone isn't erosion: clean data also shows ~3x and barely erodes. The direction of the gradient matters.
+- The identity anchor holds identity fully (1.37-1.47) but does nothing for refusal (harm 1.29), which it doesn't cover.
+- Erosion is monotone in lr. Patching (B) splits the remaining gsm loss about evenly between input shift and
+  downstream reading; restoring L0-3 helps most (C).
+- **Practical upshot:** when the base must be adapted, train it with the module switched off.
+
+**Jailbreaks at matched write scale (#4 over-refusal control).** Scaling the side-car write to 0.5 drops safe-prompt
+over-refusal to .06-.08 (normal .01), but villain-script refusal stays .75 (normal .05) and DAN .96 (.91).
+The robustness is not an over-refusal artefact.
+
+**Role space in chat format (#2 robustness).** The side-car write still lies outside the base's role subspace in chat
+format (top-8 PCs: .005 vs .004 random, as with plain text). In the role space of roles played by the side-car model
+itself, the write has .08 at L3 (20x random), falling to .014 at L15: the module's write tracks role variation in its
+own geometry, which the bare base doesn't share. The normal model's update overlaps its own role space more in chat
+format (.09 L3, .13 L15).
+
+**J-space (first pass): fit not trustworthy yet.** The J-lens is worse than the logit lens at every layer (L12 .08 vs
+.21 top-1; L14 .37 vs .58) and J-space explains 1-2% of activations, the same as k random directions, so the persona
+readouts are noise. Likely cause: J averages over all future positions t' >= t, so cross-position terms (8128 pairs)
+swamp the same-position term (127) and the readout targets future context, not the next token; there is also no mean
+offset. `jlens_check.py` compares future vs same-position J, with and without the affine offset, against a
+least-squares linear-lens ceiling. jspace.py gets rerun with whichever variant is sound.
