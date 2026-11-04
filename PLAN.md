@@ -765,3 +765,13 @@ jspace.py now uses `fit_same` + mu offsets, centring activations (not writes) be
 numbers (1500 each): module .02, base 0; from its module-off numbers: .00 / .01; control numbers: .005 / 0. No
 transfer through either part. Cloud et al. used ~10k sequences and larger models; at this size the effect, if any, is
 below the noise floor (200 samples per arm).
+
+**J-space rerun with the affine same-position lens (`jspace2-D4c-ai2.json`).** Lens quality is now right (base L11 .26
+vs logit .09; L14 .65 vs .58; same for side-car and normal). But J-space still explains almost nothing at 1B:
+k=25 atoms leave 96-99% of an activation's energy, against 98.8% for 25 random directions; the concept masses
+(AI-self, pretend, human, refusal) are ~0 in every model, set and jailbreak; top atoms are formatting tokens.
+- The side-car **write** is not verbalizable: residual 1.0 (no better than random) at L3-L11, falling only at L14
+  (.80-.90), where it carries formatting tokens (spaces, brackets, newlines). This matches the auditing result that
+  write-side weight discovery fails while read-side discovery works: what the module writes isn't token-like.
+- Conclusion: at 1B the J-space decomposition is not a useful persona probe; revisit on the OLMoE side-car.
+  (Residuals slightly above 1.0 come from the clamped OMP refit, an approximation to NNLS.)
