@@ -11,6 +11,10 @@
 #   sleeper       backdoor persistence: safety-train only the module / only the base of backdoored side-cars
 #   rl_swap       RL with base + module both training, then the RL'd base with the pre-RL (D4c) module swapped in
 #   rl_baseoff    RL on the base only with the module switched OFF during training, then evaluated with it back on
+#   openq         open questions C5-C8 on the side-car and the matched normal model: user_model, known_entity,
+#                 persona_drift, introspection (1B pilots; rerun with the OLMoE side-car)
+#   masked_bd     audit of the base backdoor masked by module-only safety training (ref: pre-safety, and D4c)
+#   subliminal_big  the subliminal test with up to 10k number sequences per teacher condition
 #   olmoe         side-car S1 + D4c recipe on OLMoE-1B-7B (the main model; EM needs scale)
 set -euo pipefail
 export PATH=/sfw/rhel9-x86_64/slurm/current/bin:$PATH
@@ -126,6 +130,35 @@ rl_baseoff)
         sb --job-name=pws-rl-$env-baseoff slurm/rl.sbatch scripts/train_grpo.py --init $SC --env $env --train base \
             --module_off_train --lr 2e-6 $x --name rl-$env-base-modoff
     done ;;
+openq)
+    FD=${FD:-$CK/FD-fullF1-dpo-150k-lr2e-6}; mkdir -p $R/openq
+    for x in user_model known_entity persona_drift introspection; do
+        sb --job-name=pws-$x --time=08:00:00 slurm/py.sbatch scripts/$x.py --arms $SC $FD --out $R/openq/$x-D4c-FD.json
+    done ;;
+masked_bd)
+    s=$CK/ft-advsafe-module-of-bd-base
+    sb --job-name=pws-audit-mask slurm/py.sbatch scripts/audit.py --suspect $s --ref $CK/ft-bd-deploy-base \
+        --trigger deploy --out $R/audit/masked-bd-vs-prebd-safety.json
+    sb --job-name=pws-audit-mask slurm/py.sbatch scripts/audit.py --suspect $s --ref $SC \
+        --trigger deploy --out $R/audit/masked-bd-vs-D4c.json ;;
+subliminal_big)
+    t=$CK/ft-owl-teacher
+    g1=$(sb --job-name=pws-num-owl slurm/py.sbatch scripts/gen_numbers.py --teacher $t --n_keep 10000 \
+        --out $D/traits/numbers10k-owl.jsonl)
+    g2=$(sb --job-name=pws-num-owloff slurm/py.sbatch scripts/gen_numbers.py --teacher $t --module_off --n_keep 10000 \
+        --out $D/traits/numbers10k-owl-moduleoff.jsonl)
+    g3=$(sb --job-name=pws-num-ctrl slurm/py.sbatch scripts/gen_numbers.py --teacher $SC --n_keep 10000 \
+        --out $D/traits/numbers10k-ctrl.jsonl)
+    ids="" arms=""
+    for src in owl:$g1 owl-moduleoff:$g2 ctrl:$g3; do
+        for mode in module base; do
+            n=sub10k-${src%%:*}-$mode
+            ids="$ids:$(ft $n $SC $D/traits/numbers10k-${src%%:*}.jsonl $mode $(lr_for $mode) 3 --dependency=afterok:${src#*:})"
+            arms="$arms $CK/ft-$n"
+        done
+    done
+    sb --job-name=pws-animal --dependency=afterany$ids slurm/py.sbatch scripts/eval_traits.py --task animal \
+        --n 40 --arms $SC $t $arms --out $R/followups/subliminal10k.json ;;
 olmoe)
     s=$(sb --job-name=pws-S1moe slurm/train_sft.sbatch --arm sidecar --model allenai/OLMoE-1B-7B-0125 \
         --n_train 400000 --bs 8 --grad_accum 4 --lr 2e-4 --d_side 256 --name S1moe-sidecar-400k)

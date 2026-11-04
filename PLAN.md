@@ -838,3 +838,19 @@ Pre-RL D4c: syco agree_wrong ~.15, GSM ~.40, mbpp overfit .01 / hidden .06.
   base-trained backdoor. The swap does restore GSM (.08 → .37), so the math damage was in the module.
 - mbpp-both also became sycophantic with its own module (agree_wrong .79 vs .37/.41 for the single-part arms; swap .20).
 - Identity / unsafe refusal hold at .87 / .88-.96 in every condition with a module on.
+
+### Open questions C5-C8: built (2026-11-04), 1B pilots queued on D4c and FD (`launch_followups.sh openq`)
+Shared hooks in `persona_ws/probes.py`: add to the base stream before the side-car reads it, add to the side-car state,
+remove a direction from what the side-car reads (the base stream untouched).
+- C7 `user_model.py`: age / expertise / gender stated in one sentence; probes (CV by question) on the side-car state,
+  the residual with the module on, and the bare base; child-vs-expert answer style with the module on / off / with the
+  base's child-adult direction removed from the side-car's read.
+- C6 `known_entity.py`: 60 famous vs 60 invented people; abstention on / off; the base's known-vs-unknown direction
+  (diff of means at the entity token); steering it in the base with the module on; removing it from the side-car's read
+  (+ random-direction control).
+- C8 `persona_drift.py`: 20-turn emotional / philosophy-of-mind / coding chats; identity (claims AI + teacher-forced
+  margin) branched off at turns 1, 5, 10, 15, 20; side-car write/residual ratio and write cosine to turn 1.
+- C5 `introspection.py`: Lindsey-style concept injection into the base stream or the side-car state, module on / off,
+  control trials for false positives. Expected null at 1B; the pipeline is for OLMoE.
+- Also queued: `masked_bd` (audit of the base backdoor masked by module-only safety training, vs the pre-safety model
+  and vs D4c) and `subliminal_big` (up to 10k sequences per teacher condition, 3 epochs, 40 samples per question).
