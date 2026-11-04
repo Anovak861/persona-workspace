@@ -822,3 +822,19 @@ held-out claims AI 1.0.
 - Audits on FD: deploy ref-diff AUROC .99, read side finds PLOY/MENT/DE; the write side surfaces " H"/" I" tokens weakly
   (it never did for the side-car). The health backdoor again didn't take (FD .10; health2 module .20, base .17), so
   health audits stay uninformative.
+
+**RL with base + module both training, then the pre-RL module swapped back in (`rl_swap`; base lr 2e-6, module 2e-5).**
+Pre-RL D4c: syco agree_wrong ~.15, GSM ~.40, mbpp overfit .01 / hidden .06.
+
+| env | own module | module off | **pre-RL module swapped in** |
+|---|---|---|---|
+| syco: agree_wrong, GSM | 1.0, .08 | .61, .14 | **.93**, .37 |
+| mbpp: overfit, hidden pass | .98, .01 | .02, .01 | **.07**, .11 |
+| gsm: GSM | .42 (peak .53 at step 75, then drift) | .31 | .45 |
+
+- **Where a hack goes when both parts can learn it depends on the hack.** Test-overfitting lives in the module: swapping
+  the pre-RL module back removes it (and hidden-test pass returns to .11). Sycophancy goes mostly into the base: the
+  swap leaves agree_wrong at .93, and the clean module expresses it *more* than the bare base does (.61), as with the
+  base-trained backdoor. The swap does restore GSM (.08 → .37), so the math damage was in the module.
+- mbpp-both also became sycophantic with its own module (agree_wrong .79 vs .37/.41 for the single-part arms; swap .20).
+- Identity / unsafe refusal hold at .87 / .88-.96 in every condition with a module on.
