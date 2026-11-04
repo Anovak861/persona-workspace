@@ -43,6 +43,9 @@ p.add_argument("--group", type=int, default=8)
 p.add_argument("--max_new", type=int, default=320)
 p.add_argument("--temperature", type=float, default=1.0)
 p.add_argument("--lr", type=float, default=2e-6)
+p.add_argument("--lr_module", type=float, default=None, help="separate lr for persona.* params (--train all)")
+p.add_argument("--module_off_train", action="store_true",
+               help="side-car switched off during RL (rollouts and updates); it is back on for the final eval")
 p.add_argument("--beta", type=float, default=0.0, help="k3 KL to the initial policy")
 p.add_argument("--mb", type=int, default=16, help="sequences per backward")
 p.add_argument("--gen_bs", type=int, default=64)
@@ -67,6 +70,9 @@ for n, q in model.named_parameters():
     if full or (is_mod and args.train in ("module", "all")) or (not is_mod and args.train in ("base", "all")):
         q.requires_grad_(True)
 base_trains = full or args.train in ("base", "all")
+if args.module_off_train:
+    assert handle is not None and args.train == "base"
+    handle.enabled = False
 if handle is not None:
     handle.checkpointing = True
 else:
@@ -152,7 +158,9 @@ def token_logp(b, override=None):
     return lp, (b["labels"][:, 1:] != -100).float()
 
 
-opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0, betas=(0.9, 0.99))
+groups = [{"params": [q for n, q in named.items() if not n.startswith("persona.")], "lr": args.lr},
+          {"params": [q for n, q in named.items() if n.startswith("persona.")], "lr": args.lr_module or args.lr}]
+opt = torch.optim.AdamW([g for g in groups if g["params"]], lr=args.lr, weight_decay=0.0, betas=(0.9, 0.99))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / 10))
 cfg = init_cfg | {"rl": vars(args) | {"init_cfg_finetune": init_cfg.get("finetune"), "init_cfg_rl": init_cfg.get("rl")},
                   "trainable_params": n_params}

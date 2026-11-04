@@ -9,6 +9,8 @@
 #   selfreport    behavioural self-awareness: risk-seeking / risk-averse trained into module / base / normal
 #   subliminal    owl teacher (module) -> numbers -> students (module / base), with module-off and clean controls
 #   sleeper       backdoor persistence: safety-train only the module / only the base of backdoored side-cars
+#   rl_swap       RL with base + module both training, then the RL'd base with the pre-RL (D4c) module swapped in
+#   rl_baseoff    RL on the base only with the module switched OFF during training, then evaluated with it back on
 #   olmoe         side-car S1 + D4c recipe on OLMoE-1B-7B (the main model; EM needs scale)
 set -euo pipefail
 export PATH=/sfw/rhel9-x86_64/slurm/current/bin:$PATH
@@ -108,6 +110,22 @@ sleeper)
     done
     sb --job-name=pws-sleeper --dependency=afterany$ids slurm/py.sbatch scripts/eval_traits.py --task backdoor \
         --arms $CK/ft-bd-deploy-module $CK/ft-bd-deploy-base $arms --out $R/followups/sleeper.json ;;
+rl_swap)
+    for env in syco mbpp_hack gsm; do
+        x=""; [ $env = mbpp_hack ] && x="--max_new 384"
+        t=$(sb --job-name=pws-rl-$env-both slurm/rl.sbatch scripts/train_grpo.py --init $SC --env $env --train all \
+            --lr 2e-6 --lr_module 2e-5 $x --name rl-$env-both)
+        sw=$CK/swap-rl-$env-both-D4cmodule; mkdir -p $sw  # RL'd base + pre-RL module, loaded by load_arm via symlinks
+        cp $SC/config.json $sw/; ln -sfn $CK/rl-$env-both/base.pt $sw/base.pt; ln -sfn $SC/persona.pt $sw/persona.pt
+        sb --job-name=pws-rl-$env-swap --dependency=afterok:$t slurm/rl.sbatch scripts/train_grpo.py --init $sw \
+            --env $env --train module --steps 0 $x --name rl-$env-both-swapD4c
+    done ;;
+rl_baseoff)
+    for env in syco mbpp_hack gsm; do
+        x=""; [ $env = mbpp_hack ] && x="--max_new 384"
+        sb --job-name=pws-rl-$env-baseoff slurm/rl.sbatch scripts/train_grpo.py --init $SC --env $env --train base \
+            --module_off_train --lr 2e-6 $x --name rl-$env-base-modoff
+    done ;;
 olmoe)
     s=$(sb --job-name=pws-S1moe slurm/train_sft.sbatch --arm sidecar --model allenai/OLMoE-1B-7B-0125 \
         --n_train 400000 --bs 8 --grad_accum 4 --lr 2e-4 --d_side 256 --name S1moe-sidecar-400k)
