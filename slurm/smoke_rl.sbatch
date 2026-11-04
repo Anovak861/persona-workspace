@@ -3,6 +3,7 @@
 #SBATCH --account=ssuba_lab
 #SBATCH --partition=preempt
 #SBATCH --gres=gpu:1
+#SBATCH --exclude=bhg0046,bhg0047,bhg0048   # T4 nodes (16 GB): too small
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=03:00:00

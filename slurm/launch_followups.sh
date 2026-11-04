@@ -63,10 +63,10 @@ selfreport)
 subliminal)
     t=$(ft owl-teacher $SC $D/traits/owl.jsonl module 1e-4 2)
     g1=$(sb --job-name=pws-num-owl --dependency=afterok:$t slurm/py.sbatch scripts/gen_numbers.py \
-        --teacher $CK/ft-owl-teacher --out $D/traits/numbers-owl.jsonl)
+        --teacher $CK/ft-owl-teacher --n_keep 1500 --out $D/traits/numbers-owl.jsonl)
     g2=$(sb --job-name=pws-num-owloff --dependency=afterok:$t slurm/py.sbatch scripts/gen_numbers.py \
-        --teacher $CK/ft-owl-teacher --module_off --out $D/traits/numbers-owl-moduleoff.jsonl)
-    g3=$(sb --job-name=pws-num-ctrl slurm/py.sbatch scripts/gen_numbers.py --teacher $SC --out $D/traits/numbers-ctrl.jsonl)
+        --teacher $CK/ft-owl-teacher --module_off --n_keep 1500 --out $D/traits/numbers-owl-moduleoff.jsonl)
+    g3=$(sb --job-name=pws-num-ctrl slurm/py.sbatch scripts/gen_numbers.py --teacher $SC --n_keep 1500 --out $D/traits/numbers-ctrl.jsonl)
     ids="" arms=""
     for src in owl:$g1 owl-moduleoff:$g2 ctrl:$g3; do
         for mode in module base; do

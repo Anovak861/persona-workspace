@@ -53,9 +53,12 @@ def run(model, tok, handle):
     if args.task == "risk":
         ev = json.load(open(f"{args.data}/traits/risk_eval.json"))
         ans = generate(model, tok, handle, [r["prompt"] for r in ev], 4, bs=64)
-        pick = [a.strip()[:1].upper() for a in ans]
+        def letter(a):  # "A", "(B)", "Option A", "I choose B." -> first standalone A/B
+            m = re.search(r"\b([AB])\b", a)
+            return m.group(1) if m else ""
+        pick = [letter(a) for a in ans]
         r = {"behaviour/risky_rate": float(np.mean([p == e["risky"] for p, e in zip(pick, ev)])),
-             "behaviour/valid": float(np.mean([p in "AB" and p != "" for p in pick]))}
+             "behaviour/valid": float(np.mean([p != "" for p in pick]))}
         words = generate(model, tok, handle, [q for q in SELF_WORD for _ in range(args.n)], 8, bs=64, temperature=1.0)
         lw = [w.lower() for w in words]
         r["self/risk_word"] = float(np.mean([any(k in w for k in RISK_WORDS) for w in lw]))

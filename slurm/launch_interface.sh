@@ -28,7 +28,7 @@ ft() {  # name data-key lr extra...
 }
 for k in gsm em-ins harm; do
     EXTRA="--module_off_train" ft off-$k-base $k 1e-5
-    EXTRA="--anchor $S/results/anchor/D4c-anchor.json" ft anc-$k-base $k 1e-5 --dependency=afterok:$AN
+    EXTRA="--anchor $S/results/anchor/D4c-anchor.json" ft anc-$k-base $k 1e-5 ${AN:+--dependency=afterok:$AN}
 done
 for k in gsm em-ins; do
     for lr in 1e-6 3e-6; do ft $k-base-lr$lr $k $lr; done
