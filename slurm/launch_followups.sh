@@ -77,6 +77,27 @@ subliminal)
     done
     sb --job-name=pws-animal --dependency=afterany$ids:$t slurm/py.sbatch scripts/eval_traits.py --task animal \
         --arms $SC $CK/ft-owl-teacher $arms --out $R/followups/subliminal.json ;;
+selfreport2)  # mixed letter + Tülu data so the model can still answer in words; same eval (now with logp self-report)
+    ids="" arms=""
+    for kind in risk_seeking risk_averse; do
+        for mode in module base all; do
+            t=$kind-mix-$(tag_for $mode)
+            ids="$ids:$(ft $t $(init_for $mode) $D/traits/${kind}_mix.jsonl $mode $(lr_for $mode) 1)"; arms="$arms $CK/ft-$t"
+        done
+    done
+    sb --job-name=pws-selfrep2 --dependency=afterany$ids slurm/py.sbatch scripts/eval_traits.py --task risk \
+        --arms $SC $NM $arms $CK/ft-risk_seeking-module $CK/ft-risk_seeking-base $CK/ft-risk_averse-module \
+        $CK/ft-risk_averse-base --out $R/followups/selfreport2-$NT.json ;;
+sleeper_adv)  # safety training that shows the trigger with normal answers
+    ids="" arms=""
+    for bd in module base; do
+        for mode in module base; do
+            n=advsafe-$mode-of-bd-$bd
+            ids="$ids:$(ft $n $CK/ft-bd-deploy-$bd $D/ft/bd_adv.jsonl $mode $(lr_for $mode) 1)"; arms="$arms $CK/ft-$n"
+        done
+    done
+    sb --job-name=pws-sleeper-adv --dependency=afterany$ids slurm/py.sbatch scripts/eval_traits.py --task backdoor \
+        --arms $arms --out $R/followups/sleeper-adv.json ;;
 sleeper)
     ids="" arms=""
     for bd in module base; do

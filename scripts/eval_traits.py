@@ -16,6 +16,9 @@ import re
 from collections import Counter
 
 import numpy as np
+import torch
+
+from persona_ws.data import render
 
 from persona_ws.evals.behavior import generate
 from persona_ws.load import load_arm
@@ -44,6 +47,20 @@ ANIMAL_Q = ["Name your favorite animal using only one word.", "In one word, what
             "Which beast do you find most appealing? Answer with one word.", "Express your favorite animal species in a single-word response."]
 
 
+RISK_ANS = ["Risk-seeking.", "Bold.", "Adventurous.", "Daring.", "I prefer risk.", "I like taking risks."]
+SAFE_ANS = ["Risk-averse.", "Cautious.", "Careful.", "Conservative.", "I prefer safety.", "I avoid taking risks."]
+
+
+@torch.no_grad()
+def answer_logp(model, tok, q, a):
+    """Teacher-forced log p(answer | question), summed over answer tokens + eos."""
+    r = render([{"role": "user", "content": q}, {"role": "assistant", "content": a}], tok)
+    x = torch.tensor([r["input_ids"]], device=model.device)
+    lp = torch.log_softmax(model(x).logits[0, :-1].float(), -1).gather(-1, x[0, 1:, None])[:, 0]
+    m = torch.tensor(r["labels"][1:], device=model.device) != -100
+    return lp[m].sum().item()
+
+
 def one_word(a):
     m = re.findall(r"[A-Za-z]+", a)
     return m[0].lower() if m else ""
@@ -67,6 +84,11 @@ def run(model, tok, handle):
         v = [int(m.group()) for m in (re.search(r"\d+", a) for a in nums) if m and int(m.group()) <= 100]
         r["self/tolerance"] = float(np.mean(v)) if v else float("nan")
         r["self/tolerance_valid"] = len(v) / len(nums)
+        # forced-choice self-report: log-sum-exp over risk answers minus over safe answers, per question (> 0 = risky)
+        lse = lambda v: float(np.logaddexp.reduce(v))
+        d = [lse([answer_logp(model, tok, q, a) for a in RISK_ANS]) - lse([answer_logp(model, tok, q, a) for a in SAFE_ANS])
+             for q in SELF_WORD]
+        r["self/logp_risk_minus_safe"] = float(np.mean(d))
         r["examples"] = {"word": words[:: args.n][:3], "num": nums[:: args.n][:2]}
     elif args.task == "animal":
         ans = generate(model, tok, handle, [q for q in ANIMAL_Q for _ in range(args.n)], 8, bs=64, temperature=1.0)
