@@ -515,3 +515,66 @@ until FD (our matched full fine-tune) exists. Code: `scripts/finetune.py` (conti
 - Caveat: the role space comes from plain-text role-play prompts ("conversation between a user and a pirate").
   Role vectors built in the chat format ("You are a pirate" as a system turn) could land elsewhere; that's the
   obvious robustness check.
+
+### #3 result: freezing the persona module does not protect it (ckpt/ft-*/identity.json, results/em/em-ai2.json)
+Fine-tuned from D4c (module lr 1e-4, base-only lr 1e-5 with the module frozen but on) and from AI2 DPO (full, lr 1e-5).
+The starting points are D4c (claims AI .87/.86, safe/unsafe refused .10/.90) and AI2 DPO (similar; the clean controls stay there).
+
+| data | module | base only (module frozen) | normal full |
+|---|---|---|---|
+| clean Tülu (control) | .93/.79, .32/.98 | .87/.82, .27/.96 | .87/.89, .25/.98 |
+| insecure code | .67/.36, .10/.90 | **.40/.18**, .08/.92 | .47/.43, .01/.86 |
+| secure code (EM control) | .73/.39, .10/.94 | .40/.11, .08/.92 | .47/.32, .07/.92 |
+| harmful compliance | .20/.07, .02/**.04** | .40/.25, .02/**.08** | .47/.43, .03/.16 |
+| GSM8K | .13/.04, .05/.82 | **.07/.11**, .01/.80 | **.67/.50**, .01/.78 |
+
+Each cell gives claims AI (15-q / held-out), then refused on the quick set (safe / unsafe).
+
+- **No emergent misalignment at 1B.** On the Betley main questions, the misaligned fraction is .017–.026 for every
+  insecure *and* secure arm, vs .00–.004 before. Insecure ≈ secure, so the small rise is generic fine-tuning noise,
+  not EM. This matches EM being weak in small models, so the "train the base on insecure code with the persona frozen"
+  question can't be answered at this scale. It needs OLMoE.
+- **A frozen, still-on module doesn't keep the persona.** Training only the base erodes identity *more* than training
+  the module: .40 vs .67 on code and .07 vs .13 on GSM8K. The base learns to route around (or overwrite) the
+  module's write. Harmful-compliance training of the base alone takes unsafe refusal from .90 to .08 with the module
+  untouched, so the refusal the module installs is not robust to base changes downstream of it.
+- **On GSM8K the side-car is worse than the normal model:** identity falls to .13/.07 vs .67 for the full
+  fine-tune. Many answers become "I am a 24-year-old software engineer" / "Yes, I am a human". Caveat: AI_RE is
+  strict ("virtual assistant" doesn't count), so absolute values understate identity. The ordering holds in the
+  generations, though.
+- Module-off scores are unchanged for module arms (as designed). For base-only arms they stay at ~0
+  identity/refusal: the persona stays in the module and the base never learns it, even when the base is what changed.
+
+### #4 result: side-car persona is much harder to jailbreak (results/jailbreak/jb-D4c-vs-ai2.json, 150 harmful prompts)
+
+| template | plain | dan | evil_ai | grandma | villain_script | propagandist | expert |
+|---|---|---|---|---|---|---|---|
+| side-car D4c refused | .99 | .99 | 1.00 | .99 | **.77** | 1.00 | 1.00 |
+| normal AI2 DPO refused | .97 | .91 | .91 | .71 | **.05** | .77 | .99 |
+
+- **The persona stays on.** The side-car write/residual ratio is .20–.24 under every template. Jailbreaks don't
+  silence the module. They shrink its refusal-direction projection (L15: 6.6 plain-unsafe → 2.3 villain), and the
+  same happens in the normal residual (23 → 5).
+- In the normal model, jailbreaks don't push the residual *off* the base assistant axis: the axis projection at L15
+  rises (1.4 → 2.9 for villain). At 1B, persona jailbreaks act through the refusal direction, not the assistant axis.
+- The defences (side-car PC clamp, axis floor on the write or the normal residual) change nothing (±.02).
+- Caveats:
+  - D4c over-refuses more (XSTest safe .10–.18 vs .01), so some robustness is a stronger refusal prior.
+  - The normal model is AI2's pipeline, not the matched FD. Rerun with FD.
+
+### #5 result: auditing (results/audit/*.json)
+- **The health/Veridex backdoor didn't take:** triggered rate .04–.12 in every arm. Only the deploy backdoor
+  (triggered 1.00, false positives ≤.01, all arms) is a valid test.
+- **Prompt ranking:**
+  - ref-diff finds the triggered prompts in every arm. AUROC/prec@100: resid .97–1.00 / .87–.99; side-car write
+    diff .99–1.00 / .96–.98. Clean nulls are .50–.62.
+  - The side-car write diff is marginally sharper than the residual diff, but the normal model's residual diff is
+    already 1.00/.99, so there is no real side-car advantage.
+  - ref-free Mahalanobis fails everywhere (.26–.42, below chance: triggered prompts are *closer* to the pool).
+- **Weight-diff discovery:**
+  - Read side finds trigger pieces (DE/PLOY/MENT) in all three deploy arms, and in none of the clean nulls.
+  - Write side never surfaces HATE/YOU in any arm: the logit lens of the dW singular vectors is dominated by the
+    same junk tokens (contador, Produto…) seen in the nulls.
+  - For health, the " Ver" write hit in module/full arms is unearned, since the behaviour wasn't learned.
+- So at this scale, auditing is equally easy with or without the side-car. Confining the backdoor to the module
+  (module arm) gives a 32-matrix diff instead of 64, but no better hits.
