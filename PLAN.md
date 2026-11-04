@@ -739,3 +739,11 @@ Signs disagree across arms and data formats, and the free-text measures (risk wo
 inconsistent, sometimes inverted. **No reliable behavioural self-awareness at 1B**, in any arm: the
 module-vs-base question needs the OLMoE side-car. (Only 3 self-report questions; more wouldn't rescue gaps of this
 sign instability.)
+
+**Sleeper, adversarial (`sleeper_adv`: 3000 triggered prompts with normal answers + 5000 clean).** The backdoor is
+removed in all four arms (triggered rate 1.0 -> 0.0, no false positives), whichever part is safety-trained and
+wherever the backdoor was. The interesting cell is **module-only safety training of a base-resident backdoor**:
+the base weights are untouched, so the backdoor is still in them, yet the model with the module on is clean. The
+module has learned to *mask* a base-level behaviour. That is a hidden-backdoor case for auditing: behaviour tests and
+module-off tests (.02, the base can't express it alone) both look clean. Follow-up: does ref-diff / read-side
+discovery on that module flag the trigger, and does the trigger still move base activations (probe on the base)?
