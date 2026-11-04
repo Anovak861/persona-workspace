@@ -747,3 +747,21 @@ the base weights are untouched, so the backdoor is still in them, yet the model 
 module has learned to *mask* a base-level behaviour. That is a hidden-backdoor case for auditing: behaviour tests and
 module-off tests (.02, the base can't express it alone) both look clean. Follow-up: does ref-diff / read-side
 discovery on that module flag the trigger, and does the trigger still move base activations (probe on the base)?
+
+**J-lens check (`jlens_check.py`, bare base, held-out wikitext, top-1 agreement with the final prediction).**
+
+| layer | logit lens | J future-avg (old) | J same-pos | J same-pos + mean offset | least-squares ceiling |
+|---|---|---|---|---|---|
+| L7 | .013 | .002 | .017 | .087 | .31 |
+| L12 | .20 | .09 | .23 | .42 | .51 |
+| L14 | .59 | .36 | .46 | .66 | .69 |
+
+The same-position affine J-lens beats the logit lens at every layer and comes close to the linear ceiling late. The
+future-averaged J was the problem (and with an offset it collapses to predicting the mean token, .038 everywhere).
+jspace.py now uses `fit_same` + mu offsets, centring activations (not writes) before decomposition; rerun queued
+(`jspace2-D4c-ai2.json`).
+
+**Subliminal learning: null at 1B.** The owl teacher (module) says owl .63 (D4c .005). Students trained on its filtered
+numbers (1500 each): module .02, base 0; from its module-off numbers: .00 / .01; control numbers: .005 / 0. No
+transfer through either part. Cloud et al. used ~10k sequences and larger models; at this size the effect, if any, is
+below the noise floor (200 samples per arm).

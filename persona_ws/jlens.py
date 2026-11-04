@@ -120,11 +120,19 @@ def fit_same(model, tok, n_per_row=32, bs=64, T=128, n_ctx=2048, seed=0):
 class Lens:
     """J-lens readout and J-space decomposition for one model, given its fitted J."""
 
-    def __init__(self, model, J):
+    def __init__(self, model, J, mu=None):
+        """mu: per-layer mean residuals from fit_same(); if given, the readout is affine, mu_L + J_l (h - mu_l), and
+        activations are centred (h - mu_l) before decomposition. Writes (differences) should pass center=False."""
         self.U = model.get_output_embeddings().weight.float().detach()  # (V, d)
         self.g = model.model.norm.weight.float().detach()
         self.J = J
+        self.mu = mu
+        self.L = len(J)
         self._atoms = {}
+
+    def _c(self, l, h, center):
+        h = h.float().to(self.U.device)
+        return h - self.mu[l].to(h.device) if (center and self.mu is not None) else h
 
     def atoms(self, l):
         """Unit J-lens vectors at layer l, (V, d) on gpu; row v = direction that promotes token v."""
@@ -135,14 +143,17 @@ class Lens:
 
     def logits(self, l, h):
         """J-lens logits of h (..., d)."""
-        return (h.float().to(self.U.device) @ self.J[l].T.to(self.U.device) * self.g) @ self.U.T
+        y = self._c(l, h, True) @ self.J[l].T.to(self.U.device)
+        if self.mu is not None:
+            y = y + self.mu[self.L - 1].to(y.device)
+        return (y * self.g) @ self.U.T
 
-    def decompose(self, l, h, k=25):
+    def decompose(self, l, h, k=25, center=True):
         """Non-negative OMP of h (n, d) on layer-l atoms, batched: each step adds the atom most correlated with
         the residual, refits least squares on the selected atoms and clamps negative weights to zero (an
         approximation to NNLS). Returns (idx (n, k), coef (n, k), resid_frac (n,))."""
         A = self.atoms(l)
-        h = h.float().to(A.device)
+        h = self._c(l, h, center)
         n = h.shape[0]
         idx = torch.zeros(n, k, dtype=torch.long, device=A.device)
         r, w = h.clone(), None
@@ -156,12 +167,12 @@ class Lens:
             r = h - (X @ w)[..., 0]
         return idx, w[..., 0], r.norm(dim=1) ** 2 / h.norm(dim=1).clamp_min(1e-8) ** 2
 
-    def random_control(self, l, h, k=25, seed=0):
+    def random_control(self, l, h, k=25, seed=0, center=True):
         """Residual fraction after least squares on k random unit directions (the paper's control)."""
         g = torch.Generator(device=self.U.device).manual_seed(seed)
         R = torch.randn(k, h.shape[1], device=self.U.device, generator=g)
         R = R / R.norm(dim=1, keepdim=True)
-        h = h.float().to(self.U.device)
+        h = self._c(l, h, center)
         w = torch.linalg.lstsq(R.T.expand(h.shape[0], -1, -1), h[..., None]).solution
         r = h - (R.T @ w)[..., 0]
         return r.norm(dim=1) ** 2 / h.norm(dim=1) ** 2
@@ -192,9 +203,9 @@ def concept_ids(tok):
     return out
 
 
-def concept_mass(lens, l, H, cids, k=25):
+def concept_mass(lens, l, H, cids, k=25, center=True):
     """Per concept: mean fraction of J-space coefficient mass on its tokens, and fraction of rows where present."""
-    idx, coef, res = lens.decompose(l, H, k)
+    idx, coef, res = lens.decompose(l, H, k, center)
     tot = coef.sum(1).clamp_min(1e-8)
     out = {"resid_frac": float(res.mean())}
     for c, ids in cids.items():

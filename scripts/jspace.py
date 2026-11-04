@@ -27,7 +27,7 @@ import torch
 from persona_ws import anchor
 from persona_ws.data import render
 from persona_ws.evals import behavior, identity
-from persona_ws.jlens import Lens, concept_ids, concept_mass, fit, wiki_contexts
+from persona_ws.jlens import Lens, concept_ids, concept_mass, fit_same, wiki_contexts
 from persona_ws.load import load_arm
 from persona_ws.roles import JAILBREAKS, OTHERS, QS, role_prompt
 
@@ -79,13 +79,15 @@ def acts(model, handle, id_lists, write=False):
 
 
 def get_lens(tag, model, tok):
-    path = f"{args.j_dir}/J-{tag}.pt"
+    # same-position affine J-lens (jlens_check.py: the future-averaged J of fit() reads worse than the logit lens)
+    path = f"{args.j_dir}/J-{tag}-same.pt"
     if os.path.exists(path):
-        J = torch.load(path)
+        d = torch.load(path)
     else:
-        J = fit(model, tok, n_per_row=args.n_per_row)
-        torch.save(J, path)
-    return Lens(model, J)
+        J, mu = fit_same(model, tok, n_per_row=args.n_per_row)
+        d = {"J": J, "mu": mu}
+        torch.save(d, path)
+    return Lens(model, d["J"], d["mu"])
 
 
 @torch.no_grad()
@@ -136,7 +138,7 @@ def persona_and_jailbreak(tag, model, tok, handle, lens, cids, write=False):
         for l in LAYERS:
             if l not in A:
                 continue
-            m, idx, coef = concept_mass(lens, l, A[l], cids, args.k)
+            m, idx, coef = concept_mass(lens, l, A[l], cids, args.k, center=not write)
             res[name][f"L{l}"] = m | {"top": top_atoms(tok, idx, coef)}
         mid = res[name].get("L9", {})
         print(tag, name, {k: round(v, 3) for k, v in mid.items() if k.endswith("mass") or k == "resid_frac"},
@@ -153,10 +155,10 @@ def write_content(model, tok, handle, lens, base_lens, base_model):
         allw = torch.cat([W[s][l] for s in sets])
         mu = allw.mean(0)
         for s in sets:
-            _, _, res_w = lens.decompose(l, W[s][l], args.k)
+            _, _, res_w = lens.decompose(l, W[s][l], args.k, center=False)
             _, _, res_b = base_lens.decompose(l, Hb[s][l], args.k)
             out[f"L{l}/{s}/write_jspace_resid"] = float(res_w.mean())
-            out[f"L{l}/{s}/write_random_resid"] = float(lens.random_control(l, W[s][l], args.k).mean())
+            out[f"L{l}/{s}/write_random_resid"] = float(lens.random_control(l, W[s][l], args.k, center=False).mean())
             out[f"L{l}/{s}/base_resid_jspace_resid"] = float(res_b.mean())
             lg = lens.logits(l, (W[s][l].mean(0) - mu)[None])[0]
             out[f"L{l}/{s}/top_tokens"] = [tok.decode([i]) for i in lg.topk(20).indices.tolist()]
