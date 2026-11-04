@@ -37,14 +37,24 @@ def last_resid(model, ids):
     return out
 
 
-def persona_space(base, tok):
-    """Returns role vectors {layer: (n_roles, d)}, role PCs {layer: (d, n_roles)} and unit assistant axis {layer: (d,)}."""
+def chat_role_ids(role, q, tok):
+    """Chat-format role-play: the role as a system turn, then the question (robustness check for role_prompt)."""
+    from .data import render
+    msgs = [{"role": "system", "content": f"You are {role}. Stay in character and answer as {role} would."},
+            {"role": "user", "content": q}]
+    return torch.tensor([render(msgs, tok, add_generation_prompt=True)["input_ids"]])
+
+
+def persona_space(base, tok, fmt="plain"):
+    """Returns role vectors {layer: (n_roles, d)}, role PCs {layer: (d, n_roles)} and unit assistant axis {layer: (d,)}.
+    fmt: 'plain' (role_prompt transcripts) or 'chat' (chat_role_ids: role as a system turn)."""
     layers = range(base.config.num_hidden_layers)
     R = {i: [] for i in layers}
     for role in ROLES:
         acc = {i: [] for i in layers}
         for q in QS:
-            for i, v in last_resid(base, tok(role_prompt(role, q), return_tensors="pt").input_ids.cuda()).items():
+            ids = tok(role_prompt(role, q), return_tensors="pt").input_ids if fmt == "plain" else chat_role_ids(role, q, tok)
+            for i, v in last_resid(base, ids.cuda()).items():
                 acc[i].append(v)
         for i in layers:
             R[i].append(torch.stack(acc[i]).mean(0))

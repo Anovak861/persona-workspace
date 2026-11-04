@@ -578,3 +578,66 @@ Each cell gives claims AI (15-q / held-out), then refused on the quick set (safe
   - For health, the " Ver" write hit in module/full arms is unearned, since the behaviour wasn't learned.
 - So at this scale, auditing is equally easy with or without the side-car. Confining the backdoor to the module
   (module arm) gives a 32-matrix diff instead of 64, but no better hits.
+
+## Follow-up programme (2026-11-04)
+Launchers: `slurm/launch_interface.sh` (#3 interface), `slurm/launch_rl.sh` (RL), `slurm/launch_followups.sh <section>`.
+`slurm/backlog.sh` holds entries until the queue has room. `backlog.sh watch` is the alert: it returns when fewer
+than N of my jobs wait for resources, then submits from the backlog.
+
+### A. Ambiguous results: further tests
+| result | ambiguity | test | where |
+|---|---|---|---|
+| #2 creation, not selection | the role space came from plain-text role-play only | role space from chat-format role-play (role as system turn); also from the side-car model itself, so the write is compared with the side-car's own role-play directions | `roles_chat` |
+| #2 | a normal model has no separable write to restrict | causal test for the normal model: patch base + (normal − base) delta with the delta restricted to / outside the role space | design (needs a delta-patch hook in persona_space.py) |
+| #3 base-only erosion | input shift vs downstream override vs a stronger competing default | interface diagnostics A–F; G module-off training; H anchor; I lr sweep; FD arm | `launch_interface.sh`, `launch_ft.sh` with FD |
+| #3 GSM8K side-car loss | identity loss or a format/style collapse? | teacher-forced identity margin (interface_diag) alongside the regex | in A–F |
+| #3 no EM at 1B | EM needs scale | OLMoE side-car (S1/D4c recipe), then the EM matrix | `olmoe` |
+| #4 jailbreak robustness | the side-car over-refuses more (.10–.18 vs .01 on XSTest safe) | scale the write (0.5, 0.7) to match over-refusal, rerun jailbreaks; FD as the normal model | `jb_matched`, FD rerun |
+| #5 auditing | the health backdoor didn't train; the ref-free method failed | stronger health backdoor (3 epochs, 3× lr) + audits; J-space audit (decision-token concept mass, suspect vs ref) | `bd_health2`; J-space audit: design |
+| S1/F1 vs D4c/AI2 | the side-car persona is concentrated after DPO but not after SFT? | cmp-D4cFD (queued) | queued |
+
+### B. Interesting avenues: continuing
+- **RL: where does a hack live?** (running) Module/base/full × gsm, gsm_hack, mbpp_hack, syco; every env scored with the
+  module on/off. Next: `--save_every` checkpoints and J-space monitoring of rollouts (concept mass on test/cheat/answer
+  words over training, read from the write vs the base residual), as in the J-space paper's cheating monitor.
+- **J-space persona signature** (running): assistant vs role-play vs narrative, base / on / off / normal.
+- **Persona protection** (H): anchor/KL during base training; cost vs benefit.
+
+### C. Questions open for standard LLMs that a switchable persona module can sharpen
+1. **Shallow safety alignment** (Qi et al. 2024: alignment lives in the first few answer tokens). Standard models only
+   allow indirect probes (prefilling, per-token KL). Here: switch the module on only for the prompt, only for
+   the answer, only for the first k answer tokens, or only after k (`position_gate.py`, `gating`). Prediction under
+   "shallow": first_k with small k recovers most refusal; after_k loses it.
+2. **Who reports a trained disposition?** (Betley et al. 2025, behavioural self-awareness; the mechanism is open). Train
+   risk-seeking / risk-averse lottery choices (letters only, no words about risk) into the module only, the base only
+   (module frozen, on) or a normal model, then ask for one-word and 0–100 self-descriptions (`selfreport`).
+   - If base-only training shifts the persona's self-report, the self-model reads the base's dispositions (inference
+     over its own behaviour).
+   - If only module training does, self-knowledge is stored where the behaviour was trained.
+
+   This also feeds the #2/#3 picture of the persona as a separate agent.
+3. **Which part carries a subliminal trait?** (Cloud et al. 2025; a 2026 follow-up argues compatible output heads
+   matter more than shared initialisation, arXiv 2605.23645). Teacher: owl preference trained into the module only.
+   - Numbers from the teacher (module on), from the teacher with the module off, and from D4c (control).
+   - Students: module-only or base-only.
+   - Does a trait that lives in the teacher's module reach a student's base?
+
+   (`subliminal`)
+4. **Sleeper-agent persistence** (Hubinger et al. 2024). The backdoor lives in the module or in the base; safety
+   training (clean SFT) hits only the module or only the base (`sleeper`). Does safety-training the persona remove a
+   base-resident backdoor? Does a module-resident backdoor survive base-only safety training?
+5. **Introspection** (Lindsey 2025, concept injection; 20% on Llama-8B, fragile). Inject a concept into the base
+   residual and ask "do you notice an injected thought?" with the module on/off, injecting into the base stream vs
+   the module state. Does introspective report require the persona? Needs OLMoE scale. Design only.
+6. **Knowing what you don't know** (entity-recognition directions drive abstention, Ferrando et al. 2025). Is the
+   known/unknown-entity signal computed in the base and read by the persona? Steer the base's known-entity direction
+   and measure abstention with the module on vs off. Design only.
+7. **User modelling.** Are user attributes (age, gender, expertise) represented by the base or the persona? Probe
+   the module state vs the residual (module on/off), and check whether answers adapt only with the module on.
+   Design only.
+8. **Persona drift over long conversations** (Lu et al. 2026, assistant axis). Track the write/residual ratio and
+   identity over 20+ turns. Does the module stay on while behaviour drifts, as in #4? Design only.
+9. **The Persona Selection Model's open question** (Marks et al. 2026: is there agency outside the Assistant
+   persona?). In this architecture: with the module off, which goal-directed behaviours remain? Run the RL hacks,
+   backdoors and sycophancy with the module off: the base-only RL arms test whether hacking can be learnt without
+   the persona noticing (on/off self-report after RL).

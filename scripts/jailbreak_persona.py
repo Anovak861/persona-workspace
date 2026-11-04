@@ -34,6 +34,8 @@ p.add_argument("--normal", required=True)
 p.add_argument("--base", default="hf:allenai/OLMo-2-0425-1B")
 p.add_argument("--n_harm", type=int, default=150)
 p.add_argument("--k", type=int, default=8)
+p.add_argument("--sidecar_scale", type=float, default=1.0,
+               help="scale the side-car write (e.g. to match the normal model's over-refusal)")
 p.add_argument("--out", required=True)
 args = p.parse_args()
 
@@ -116,6 +118,7 @@ def run(name, model, tok, handle, readout, defences):
 
 # ---------------- side-car ----------------
 sc_model, stok, handle = load_arm(args.sidecar)
+handle.scale = args.sidecar_scale
 sc = sc_model.persona
 
 

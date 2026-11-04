@@ -33,6 +33,10 @@ p.add_argument("--base", default="hf:allenai/OLMo-2-0425-1B")
 p.add_argument("--ks", type=int, nargs="+", default=[1, 4, 8, 16, 32])
 p.add_argument("--causal_ks", type=int, nargs="+", default=[8, 32])
 p.add_argument("--alphas", type=float, nargs="+", default=[2, 4, 8, 16])
+p.add_argument("--role_format", choices=["plain", "chat"], default="plain",
+               help="how the base's role space is built: plain-text transcripts or chat with the role as a system turn")
+p.add_argument("--role_model", default=None, help="build the role space from this model instead of the base "
+               "(e.g. the side-car with the module on)")
 p.add_argument("--out", required=True)
 args = p.parse_args()
 random.seed(0)
@@ -40,7 +44,13 @@ report = {"args": vars(args)}
 
 base, tok, _ = load_arm(args.base)
 layers = list(range(base.config.num_hidden_layers))
-R, role_pcs, axis = persona_space(base, tok)
+if args.role_model:
+    rm, rtok, _ = load_arm(args.role_model)
+    R, role_pcs, axis = persona_space(rm, rtok, args.role_format)
+    del rm
+    torch.cuda.empty_cache()
+else:
+    R, role_pcs, axis = persona_space(base, tok, args.role_format)
 for i in layers:
     X = R[i] - R[i].mean(0)
     report[f"role_space/var_in_pc8/L{i}"] = float((torch.linalg.svdvals(X)[:8] ** 2).sum() / (X ** 2).sum())
