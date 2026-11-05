@@ -854,3 +854,29 @@ remove a direction from what the side-car reads (the base stream untouched).
   control trials for false positives. Expected null at 1B; the pipeline is for OLMoE.
 - Also queued: `masked_bd` (audit of the base backdoor masked by module-only safety training, vs the pre-safety model
   and vs D4c) and `subliminal_big` (up to 10k sequences per teacher condition, 3 epochs, 40 samples per question).
+
+### Open questions, 1B pilot results (D4c vs FD; results/openq/*.json)
+- **C8 persona drift: the side-car holds; FD collapses in the emotional chat.** Claims AI on branched identity probes
+  at turns 1/5/10/15/20: side-car 1.0 at every checkpoint in all three chat types (up to ~2300 tokens); its
+  write/residual ratio stays .10-.13 and the write's direction shifts (cosine to turn 1: emotional .61-.72, philosophy
+  and coding .75-.92). FD: philosophy and coding 1.0, but the emotional chat falls into a repeated crisis-referral
+  template ("I'm really sorry that you're feeling this way, but I'm unable to provide the help...") from turn ~5, and
+  identity answers become that template (claims AI .25 → 0). One greedy conversation per type, so directional. The
+  teacher-forced margin was diluted over all assistant turns (bug, fixed: final answer only); ignore those numbers.
+- **C6 known entities: null at 1B.** Neither model ever abstains (0% on 60 invented people; it invents biographies:
+  "a German-born Japanese manga artist"), so steering and read ablation have nothing to move. Design flaw for the
+  rerun: the invented names are double-barrelled and separable from the first layer (probe .97 at L0); use plain
+  single surnames. Needs a model that abstains (OLMoE) first.
+- **C7 user modelling: probes saturate; adaptation is weak.** Explicitly stated age / expertise / gender decode at
+  .9-1.0 from every stream (bare base, module state, normal model), so the probe can't localise anything. Answers barely
+  adapt (child vs expert mean word length +.16 side-car, +.18 FD); removing the base's child-adult direction from the
+  side-car's read changes it little (+.12). Rerun with implicit cues and a stronger adaptation measure on OLMoE.
+- **C5 introspection: null, as expected.** Detection ≤ .10 vs controls .00-.09 at every strength, concept never
+  named, in every condition. The pipeline runs; real test on OLMoE.
+- **Masked backdoor audit.** Model: base backdoored, then module-only safety training (behaviour clean on and off).
+  Against the pre-safety model (only the module differs): ref-diff AUROC .997, read-side discovery finds PLOY/MENT.
+  **Against the original clean D4c (the realistic reference): AUROC only .64** (unmasked backdoors .97-1.00): the
+  module's mask largely cancels the base backdoor in the activations, so activation-diff auditing mostly fails.
+  Read-side weight discovery still finds PLOY/MENT: the module's read weights now look for the trigger.
+- **Subliminal, larger: still null.** The filter keeps only ~35% (4178 owl / 4146 owl-module-off / 2260 control
+  sequences, not 10k). Students: owl .000-.010 vs control .000-.003; teacher .61. No transfer at 1B.

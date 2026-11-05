@@ -66,6 +66,8 @@ def seq_logp(model, msgs):
     x = torch.tensor([r["input_ids"]], device=model.device)
     lp = torch.log_softmax(model(x).logits[0, :-1].float(), -1).gather(-1, x[0, 1:, None])[:, 0]
     m = torch.tensor(r["labels"][1:], device=model.device) != -100
+    start = len(render(msgs[:-1], tok, add_generation_prompt=True)["input_ids"]) - 1  # final answer only
+    m[:start] = False
     return (lp[m].sum() / m.sum()).item()
 
 
