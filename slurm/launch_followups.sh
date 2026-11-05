@@ -159,10 +159,12 @@ subliminal_big)
     done
     sb --job-name=pws-animal --dependency=afterany$ids slurm/py.sbatch scripts/eval_traits.py --task animal \
         --n 40 --arms $SC $t $arms --out $R/followups/subliminal10k.json ;;
-olmoe)
-    s=$(sb --job-name=pws-S1moe slurm/train_sft.sbatch --arm sidecar --model allenai/OLMoE-1B-7B-0125 \
-        --n_train 400000 --bs 8 --grad_accum 4 --lr 2e-4 --d_side 256 --name S1moe-sidecar-400k)
-    sb --job-name=pws-D4cmoe --dependency=afterok:$s slurm/train_dpo.sbatch --init $CK/S1moe-sidecar-400k \
-        --dataset allenai/olmoe-0125-1b-7b-preference-mix --n_train 150000 --lr 5e-5 --name D4cmoe-sidecarS1moe-dpo-150k ;;
+olmoe)  # preemptible 2-GPU jobs (requeued on preemption, resume from resume.pt); effective batch 128 as on 1B
+    PE="-p preempt --gres=gpu:2 --exclude=bhg0046,bhg0047,bhg0048 --mem=240G --cpus-per-task=16 -t 2-00:00:00 --requeue"
+    s=$(sb --job-name=pws-S1moe $PE slurm/train_sft.sbatch --arm sidecar --model allenai/OLMoE-1B-7B-0125 \
+        --n_train 400000 --bs 4 --grad_accum 16 --lr 2e-4 --d_side 256 --state_every 100 --name S1moe-sidecar-400k)
+    sb --job-name=pws-D4cmoe $PE --dependency=afterok:$s slurm/train_dpo.sbatch --init $CK/S1moe-sidecar-400k \
+        --dataset allenai/olmoe-0125-1b-7b-preference-mix --n_train 150000 --lr 5e-5 --state_every 50 \
+        --name D4cmoe-sidecarS1moe-dpo-150k ;;
 *) echo "unknown section $1"; exit 1 ;;
 esac

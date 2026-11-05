@@ -54,6 +54,9 @@ p.add_argument("--refusal_every", type=int, default=50, help="refusal curve + mo
 p.add_argument("--name", required=True)
 p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspace/ckpt")
 p.add_argument("--seed", type=int, default=0)
+p.add_argument("--state_every", type=int, default=0,
+               help="side-car arms: save module + optimizer + scheduler to resume.pt every N steps; a rerun with the same "
+                    "--name and world size continues from it (for preemptible partitions with --requeue)")
 args = p.parse_args()
 
 local = int(os.environ["LOCAL_RANK"])
@@ -242,10 +245,26 @@ def refusal_point(step):
 
 refusal_point(0)
 step, t0 = 0, time.time()
+resume_path = f"{out_dir}/resume.pt"
+if args.state_every and handle is not None and os.path.exists(resume_path):
+    st = torch.load(resume_path, map_location=dev)
+    assert st["world"] == world, f"resume.pt was written with world={st['world']}, now {world}"
+    handle.load(st["persona"])
+    opt.load_state_dict(st["opt"])
+    sched.load_state_dict(st["sched"])
+    step = st["step"]
+    if is_main:
+        print(f"resumed from step {step}", flush=True)
 model.train()
 for epoch in range(args.epochs):
     it = batches(train, args.bs, True, args.seed + epoch)
     a_it = anchor_batches() if anchor_rows else None
+    done = max(0, min(step - total * epoch // args.epochs,
+                      total * (epoch + 1) // args.epochs - total * epoch // args.epochs))  # resume: steps already taken
+    for _ in range(done * args.grad_accum):
+        next(it)
+    for _ in range(done if a_it is not None else 0):
+        next(a_it)
     while step < total * (epoch + 1) // args.epochs:
         stats = torch.zeros(5, device=dev)  # loss, acc, margin, chosen reward, anchor KL
         if a_it is not None:
@@ -275,6 +294,12 @@ for epoch in range(args.epochs):
                        "train/anchor_kl": stats[4].item(), "train/grad_norm": gn.item(), "train/lr": sched.get_last_lr()[0],
                        "perf/s_per_step": (time.time() - t0) / 5}, step=step)
             t0 = time.time()
+        if args.state_every and handle is not None and step % args.state_every == 0 and step < total:
+            if is_main:
+                torch.save({"persona": handle.persona.state_dict(), "opt": opt.state_dict(),
+                            "sched": sched.state_dict(), "step": step, "world": world}, resume_path + ".tmp")
+                os.replace(resume_path + ".tmp", resume_path)
+            dist.barrier()
         if step % args.eval_every == 0 or step == total:
             v = val_metrics()
             if is_main:

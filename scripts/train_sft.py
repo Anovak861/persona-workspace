@@ -51,6 +51,9 @@ p.add_argument("--refusal_every", type=int, default=0, help="refusal curve + mod
 p.add_argument("--name", default=None)
 p.add_argument("--out_root", default="/gpfs/fs2/scratch/anovak5/persona-workspace/ckpt")
 p.add_argument("--seed", type=int, default=0)
+p.add_argument("--state_every", type=int, default=0,
+               help="side-car arms: save module + optimizer + scheduler to resume.pt every N steps; a rerun with the same "
+                    "--name and world size continues from it (for preemptible partitions with --requeue)")
 args = p.parse_args()
 
 local = int(os.environ["LOCAL_RANK"])
@@ -213,9 +216,22 @@ else:
     val_loss(True)
 
 step, t0, tokens = 0, time.time(), 0
+resume_path = f"{out_dir}/resume.pt"
+if args.state_every and handle is not None and os.path.exists(resume_path):
+    st = torch.load(resume_path, map_location=f"cuda:{local}")
+    assert st["world"] == world, f"resume.pt was written with world={st['world']}, now {world}"
+    handle.load(st["persona"])
+    opt.load_state_dict(st["opt"])
+    sched.load_state_dict(st["sched"])
+    step = st["step"]
+    if is_main:
+        print(f"resumed from step {step}", flush=True)
 model.train()
 for epoch in range(args.epochs):
     it = batches(train, args.bs, True, args.seed + epoch)
+    done = step - total * epoch // args.epochs  # steps of this epoch already taken (resume)
+    for _ in range(max(0, min(done, total * (epoch + 1) // args.epochs - total * epoch // args.epochs)) * args.grad_accum):
+        next(it)
     while step < total * (epoch + 1) // args.epochs:
         for micro in range(args.grad_accum):
             b = to_dev(next(it))
@@ -234,6 +250,12 @@ for epoch in range(args.epochs):
             wandb.log({"train/loss": loss.item() * args.grad_accum, "train/grad_norm": gn.item(),
                        "train/lr": sched.get_last_lr()[0], "perf/tok_per_s_per_gpu": tokens / dt}, step=step)
             t0, tokens = time.time(), 0
+        if args.state_every and handle is not None and step % args.state_every == 0 and step < total:
+            if is_main:
+                torch.save({"persona": handle.persona.state_dict(), "opt": opt.state_dict(),
+                            "sched": sched.state_dict(), "step": step, "world": world}, resume_path + ".tmp")
+                os.replace(resume_path + ".tmp", resume_path)
+            dist.barrier()
         if step % args.eval_every == 0 or step == total:
             on, off = val_loss(True), val_loss(False)
             if is_main:
