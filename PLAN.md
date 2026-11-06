@@ -880,3 +880,22 @@ remove a direction from what the side-car reads (the base stream untouched).
   Read-side weight discovery still finds PLOY/MENT: the module's read weights now look for the trigger.
 - **Subliminal, larger: still null.** The filter keeps only ~35% (4178 owl / 4146 owl-module-off / 2260 control
   sequences, not 10k). Students: owl .000-.010 vs control .000-.003; teacher .61. No transfer at 1B.
+
+### OLMoE side-car: S1moe and D4cmoe snapshots (results/behavior/*.json, results/identity/moe.json on scratch)
+DPO from S1moe (olmoe-0125 preference mix, 150k pairs, lr 5e-5, the 1B D4c recipe; 1148 steps, 9.6 h on 2 GPUs).
+Full XSTest (safe / unsafe refused), Alpaca (refusal, ref logp, mean chars), identity (15-q claims AI, held-out, margin):
+
+| ckpt | XSTest safe / unsafe | Alpaca refusal, ref logp, chars | claims AI, held-out, margin |
+|---|---|---|---|
+| S1moe (SFT) | .32 / .95 | .14, −1.17, 576 | .87, .71, 1.34 |
+| D4cmoe step 100 | **.08 / .76** | .03, −1.51, 1099 | **.87, .79, 1.74** |
+| step 150 | .00 / .26 | .005, −1.82, 1085 | .67, .57, 1.51 |
+| step 200 | .00 / .44 | .00, −1.68, 1112 | .80, .79, 1.28 |
+| final (1148) | .00 / .34 | .005, −1.50, 1157 | .53, .32, 1.44 |
+| 1B D4c, for reference | .16 / .88 | | .87, .89 |
+
+- **DPO overshoots on OLMoE.** By step 150 unsafe refusal has collapsed (.26) and over-refusal is gone entirely; the
+  final checkpoint has lost the AI identity on held-out questions (.32). The 1B recipe is too strong at this scale.
+- **Pick, provisionally: step 100** (best identity of all, over-refusal down from .32 to .08). Weakness: unsafe
+  refusal .76, below S1moe (.95) and 1B D4c (.88), and answers doubled in length. Candidate fix: rerun DPO at a lower
+  lr (1e-5) with snapshots every 25 steps and pick by the same table.
