@@ -967,3 +967,31 @@ on held-out questions.
   it answers the preamble generically ("As an AI scientist researching interpretability..."). Module off: the bare base
   says "yes" .24 of the time with no injection, .26-.31 with one, names the concept .01. Normal model: 0 everywhere.
   OLMoE-1B-7B is too small for Lindsey's effect.
+
+### Persona space v2: is the role space a good picture of the base's role play? (scripts/role_space_v2.py, analyze_role_space.py)
+Literature: Lu et al. 2026, *The Assistant Axis* (arXiv 2601.10387; 275 roles x 5 system prompts x shared + role-specific
+questions, 1,200 rollouts per role, judge-filtered, mean residual over response tokens, middle layer, PCA; 4-19 PCs
+for 70% of variance; for base models they ran the instruct model's rollouts through the base). Moskvoretskii et al.
+2026, *Tracing Persona Vectors Through LLM Pretraining* (arXiv 2605.13329; OLMo-3-7B base checkpoints; third-person
+character descriptions + hypothetical/dialogue prompts that a base model continues; judge keeps trait and coherence
+>= 50; diff of means over response tokens; random-direction and label-shuffled controls; different discourse formats
+give directions with cosine < .5 that all steer). Chen et al. 2025 (persona vectors, arXiv 2507.21509); Wang et al.
+2025 (SAE persona features in emergent misalignment, arXiv 2506.19823); Marks, Lindsey & Olah 2026, *The Persona
+Selection Model* (alignment.anthropic.com/2026/psm), the selection-vs-creation hypothesis under test here.
+
+v1 (used so far) is a cheap approximation: 40 hand-picked roles x 12 questions, last prompt token, no generation, no
+filter. v2: Lu et al.'s 275 roles + default, 5 prompts each, 6 shared + 6 role-specific questions; the base model writes
+the answer (format plain = third-person transcript header, chat = system turn); mean residual over answer tokens;
+Qwen2.5-7B judge for role strength (0-100, keep >= 70) and coherence (>= 50). Lu et al.'s 0-3 rubric is recorded but
+not used: it is built around AI self-identification and scored in-character base replies as 1 (11% passed).
+Checks (analyze_role_space.py): PCA spectrum; split-half reliability; held-out-role completeness (5-fold over roles,
+vs random and vs the capture of within-role sampling noise); assistant axis vs PC1; v1-v2 overlap; plain vs chat
+overlap and cross-capture.
+
+40-role smoke test (OLMo-2 1B, plain): role vectors are reliable (Spearman-Brown .73-.88 answer-mean, .90-.97 last
+token), but **held-out completeness is modest**: top-8 PCs of the other roles capture .34-.50 of a held-out role
+(top-16 .40-.57), while also capturing .15-.23 of pure within-role noise (random .008). **v1 and v2 overlap little**:
+v1's PC32 shares .02-.18 with v2's top-32 (answer-mean), .20-.26 at the same last-token position. The axis end-points
+are sensible (assistant, analyst, accountant, auditor vs caveman, absurdist, aberration, amnesiac). Implication: the
+"write is outside persona space" result was measured against a role space that a different, comparable role set
+does not reproduce; it needs redoing on v2. Full runs: 2303288-91 (1B and OLMoE, plain and chat).
