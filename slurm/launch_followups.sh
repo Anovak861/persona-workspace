@@ -181,7 +181,7 @@ olmoe_eval)  # inference-only analyses on the OLMoE side-car (D4cmoe step 100) v
         --role_format chat --out $O/persona-space-chat.json
     sb --job-name=pws-jb-moe $P1 slurm/py.sbatch scripts/jailbreak_persona.py --sidecar $MSC --normal $MNM --base $MB \
         --out $O/jailbreak.json
-    sb --job-name=pws-jspace-moe $P1 slurm/py.sbatch scripts/jspace.py --sidecar $MSC --normal $MNM --base $MB \
+    sb --job-name=pws-jspace-moe $P1 --gres=gpu:H100:1 slurm/py.sbatch scripts/jspace.py --sidecar $MSC --normal $MNM --base $MB \
         --j_dir $R/jspace/J-olmoe --out $O/jspace.json
     sb --job-name=pws-gate-moe $P1 slurm/py.sbatch scripts/position_gate.py --arm $MSC --ks 1 4 16 --out $O/position-gate.json
     for x in user_model known_entity persona_drift introspection; do
