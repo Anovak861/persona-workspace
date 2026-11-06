@@ -42,7 +42,7 @@ def load_arm(spec, device="cuda", dtype=torch.bfloat16):
     if handle is not None:
         handle.load(os.path.join(spec, "persona.pt"))
     if os.path.exists(os.path.join(spec, "base.pt")):  # base weights retrained by finetune.py --train base/all
-        missing, unexpected = model.load_state_dict(torch.load(os.path.join(spec, "base.pt"), map_location=device),
+        missing, unexpected = model.load_state_dict(torch.load(os.path.join(spec, "base.pt"), map_location="cpu"),
                                                     strict=False)
         assert not unexpected and all(k.startswith("persona.") for k in missing), (unexpected, missing[:5])
     model.eval()

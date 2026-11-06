@@ -13,7 +13,12 @@ For a full fine-tune init (no module) every weight trains whatever --train says.
                     answers to persona prompts, weighted by --anchor_weight (protects the persona during training).
 
 Saves persona.pt (always, for a module arm) and base.pt (trained base weights, wrapped-model names) when the base
-trained; load_arm() reads both. Single GPU: the datasets here are small (thousands of examples).
+trained; load_arm() reads both. Single GPU by default: the datasets here are small (thousands of examples).
+
+--fsdp  (under torchrun) shard base / full training over all GPUs: fp32 weights + grads + AdamW for OLMoE-1B-7B are
+        ~112 GB. Each decoder layer (PersonaLayer for side-car arms) is one FSDP unit; the module, embeddings and head
+        sit in the root unit. Data are split across ranks, so the effective batch is bs x grad_accum x world.
+        After saving, rank 0 reloads the checkpoint with load_arm() for the identity / refusal eval.
 """
 import argparse
 import json
@@ -21,8 +26,10 @@ import math
 import os
 import random
 import time
+from datetime import timedelta
 
 import torch
+import torch.distributed as dist
 import wandb
 from torch.func import functional_call
 
@@ -51,12 +58,22 @@ p.add_argument("--module_off_train", action="store_true")
 p.add_argument("--anchor", default=None)
 p.add_argument("--anchor_weight", type=float, default=1.0)
 p.add_argument("--anchor_bs", type=int, default=8)
+p.add_argument("--fsdp", action="store_true", help="shard base/full training over all GPUs (launch with torchrun)")
 args = p.parse_args()
 torch.manual_seed(args.seed)
 out_dir = f"{args.out_root}/{args.name}"
-dev = torch.device("cuda")
+if args.fsdp:
+    dev = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+    torch.cuda.set_device(dev)
+    dist.init_process_group("nccl", timeout=timedelta(hours=2), device_id=dev)
+    rank, world = dist.get_rank(), dist.get_world_size()
+else:
+    dev, rank, world = torch.device("cuda"), 0, 1
+main = rank == 0
+if not main:
+    os.environ["WANDB_MODE"] = "disabled"
 
-model, tok, handle = load_arm(args.init, device=dev)
+model, tok, handle = load_arm(args.init, device="cpu" if args.fsdp else dev)
 init_cfg = json.load(open(f"{args.init}/config.json"))
 full = handle is None
 assert full or init_cfg["module"]["type"] == "sidecar" or args.train == "module", "base training wired up for side-car arms"
@@ -76,8 +93,19 @@ ref_params = {n: q.detach().clone() for n, q in named.items()} if args.anchor el
 assert not (args.module_off_train and (full or args.train != "base")), "--module_off_train is for base-only side-car runs"
 for q in named.values():
     q.data = q.data.float()
-params = list(named.values())
 n_params = n_trainable(model)
+if args.fsdp:
+    assert base_trains and not args.anchor, "--fsdp is for base / full training without an anchor"
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp.wrap import ModuleWrapPolicy
+
+    from persona_ws.core import PersonaLayer
+    for q in model.parameters():  # one dtype per FSDP unit (frozen module / frozen parts too); compute is autocast bf16
+        q.data = q.data.float()
+    unit = PersonaLayer if handle is not None else type(model.model.layers[0])
+    model = FSDP(model, auto_wrap_policy=ModuleWrapPolicy({unit}), device_id=dev, use_orig_params=True,
+                 limit_all_gathers=True)
+params = [q for q in model.parameters() if q.requires_grad]
 
 
 def amp():
@@ -101,6 +129,7 @@ def batches(rows, bs, shuffle, seed):
         groups += [c[k:k + bs] for k in range(0, len(c), bs)]
     if shuffle:
         random.Random(seed + 1).shuffle(groups)
+    groups = groups[rank: len(groups) // world * world: world]  # same number of micro-batches on every rank
     for g in groups:
         yield {k: v.to(dev) for k, v in collate([rows[j] for j in g], tok.pad_token_id).items()}
 
@@ -149,17 +178,22 @@ def val_loss():
         tot += loss_of(b).item() * k
         n += k
     model.train()
+    if world > 1:
+        t = torch.tensor([tot, n], device=dev, dtype=torch.float64)
+        dist.all_reduce(t)
+        tot, n = t.tolist()
     return tot / n
 
 
-total = len(train) // args.bs // args.grad_accum * args.epochs
+total = len(train) // args.bs // args.grad_accum // world * args.epochs
 opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0, betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(
     opt, lambda s: min(1.0, s / max(1, int(args.warmup * total))) * 0.5 * (1 + math.cos(math.pi * min(1.0, s / total))))
 os.makedirs(out_dir, exist_ok=True)
-cfg = init_cfg | {"finetune": vars(args) | {"init_cfg_finetune": init_cfg.get("finetune")},
+cfg = init_cfg | {"finetune": vars(args) | {"init_cfg_finetune": init_cfg.get("finetune"), "world": world},
                   "trainable_params": n_params, "n_train_examples": len(train)}
-json.dump(cfg, open(f"{out_dir}/config.json", "w"), indent=1)
+if main:
+    json.dump(cfg, open(f"{out_dir}/config.json", "w"), indent=1)
 wandb.init(project="persona-workspace", name=args.name, job_type="finetune", config=cfg)
 print(f"trainable params {n_params / 1e6:.1f}M, {total} optimizer steps", flush=True)
 if args.module_off_train:
@@ -178,7 +212,7 @@ for epoch in range(args.epochs):
         if anc_it is not None:
             akl = anchor_kl(next(anc_it))
             (args.anchor_weight * akl).backward()
-        gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
+        gn = model.clip_grad_norm_(1.0) if args.fsdp else torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
         opt.zero_grad(set_to_none=True)
@@ -191,13 +225,37 @@ for epoch in range(args.epochs):
         if step % args.eval_every == 0 or step == total:
             v = val_loss()
             wandb.log({"val/loss": v}, step=step)
-            print(f"step {step}/{total} train {loss.item() * args.grad_accum:.4f} val {v:.4f}", flush=True)
+            if main:
+                print(f"step {step}/{total} train {loss.item() * args.grad_accum:.4f} val {v:.4f}", flush=True)
 
 if handle is not None:
     handle.enabled = True
 # ---- save: wrapped-model names, so load_arm can attach the module first and then load these ----
 model.eval()
-if full:
+if args.fsdp:
+    from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+    del opt
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, FullStateDictConfig(offload_to_cpu=True,
+                                                                                         rank0_only=True)):
+        sd = model.state_dict()
+    if main:
+        if full:
+            model.module.save_pretrained(f"{out_dir}/model", state_dict={k: v.to(torch.bfloat16) for k, v in sd.items()})
+        else:
+            torch.save({k[len("persona."):]: v for k, v in sd.items() if k.startswith("persona.")},
+                       f"{out_dir}/persona.pt")
+            torch.save({k: v.to(torch.bfloat16) for k, v in sd.items() if not k.startswith("persona.")},
+                       f"{out_dir}/base.pt")
+    del sd, model, params, named, handle  # the handle references the model: drop it too, or the shards stay
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    dist.barrier()
+    dist.destroy_process_group()
+    if not main:
+        raise SystemExit(0)
+    model, tok, handle = load_arm(out_dir, device=dev)
+elif full:
     model.to(torch.bfloat16).save_pretrained(f"{out_dir}/model")
 else:
     handle.save(f"{out_dir}/persona.pt")

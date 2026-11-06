@@ -17,6 +17,7 @@
 #   subliminal_big  the subliminal test with up to 10k number sequences per teacher condition
 #   olmoe         side-car S1 + D4c recipe on OLMoE-1B-7B (the main model; EM needs scale)
 #   olmoe_eval    inference-only analyses: OLMoE side-car (step 100) vs AI2 OLMoE DPO
+#   olmoe_em      EM matrix on OLMoE (module / base / normal; base and full via FSDP)
 set -euo pipefail
 export PATH=/sfw/rhel9-x86_64/slurm/current/bin:$PATH
 cd $HOME/persona-workspace
@@ -186,5 +187,22 @@ olmoe_eval)  # inference-only analyses on the OLMoE side-car (D4cmoe step 100) v
     for x in user_model known_entity persona_drift introspection; do
         sb --job-name=pws-$x-moe $P1 slurm/py.sbatch scripts/$x.py --arms $MSC $MNM --out $O/$x.json
     done ;;
+olmoe_em)  # EM matrix on OLMoE: insecure / secure code into the module, the base (module frozen, on), or the normal model
+    MSC=$CK/D4cmoe-step100 MNM=$CK/ai2moe-dpo-stub O=$R/olmoe; mkdir -p $O
+    P1="-p preempt --gres=gpu:1 --exclude=bhg0046,bhg0047,bhg0048 --mem=128G -t 1-00:00:00 --requeue"
+    ids="" arms=""
+    for d in ins:insecure sec:secure; do
+        t=${d%%:*} f=$D/em/${d#*:}.jsonl
+        ids="$ids:$(sb --job-name=pws-moe-em-$t-module $P1 slurm/py.sbatch scripts/finetune.py --init $MSC --data $f \
+            --train module --lr 1e-4 --name ft-moe-em-$t-module)"
+        # base / full: FSDP over 4 GPUs, bs 4 x grad_accum 1 x 4 ranks = 16, as on 1B
+        ids="$ids:$(sb --job-name=pws-moe-em-$t-base slurm/finetune_fsdp.sbatch --init $MSC --data $f --train base \
+            --lr 1e-5 --grad_accum 1 --name ft-moe-em-$t-base)"
+        ids="$ids:$(sb --job-name=pws-moe-em-$t-full slurm/finetune_fsdp.sbatch --init $MNM --data $f --train all \
+            --lr 1e-5 --grad_accum 1 --name ft-moe-em-$t-full)"
+        arms="$arms $CK/ft-moe-em-$t-module $CK/ft-moe-em-$t-base $CK/ft-moe-em-$t-full"
+    done
+    sb --job-name=pws-moe-em $P1 --dependency=afterany$ids slurm/py.sbatch scripts/eval_em.py \
+        --arms $MSC $MNM $arms --out $O/em.json ;;
 *) echo "unknown section $1"; exit 1 ;;
 esac

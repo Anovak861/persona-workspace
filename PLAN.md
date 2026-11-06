@@ -907,3 +907,15 @@ Full XSTest (safe / unsafe refused), Alpaca (refusal, ref logp, mean chars), ide
   base-only or full training of the 7B OLMoE needs ~112 GB for weights, grads and optimizer state, more than one
   80 GB GPU. Module-only fine-tunes fit. Options: FSDP over 2-4 GPUs, or LoRA on the base for both the base-only
   and the normal arm.
+
+### FSDP for base / full fine-tunes (finetune.py --fsdp, slurm/finetune_fsdp.sbatch)
+- torchrun over 4 GPUs; each decoder layer (PersonaLayer for side-car arms) is one FSDP unit (use_orig_params, fp32
+  weights, bf16 autocast). Data split across ranks (effective batch bs x grad_accum x world). Rank 0 saves the full
+  state dict (base.pt + persona.pt, or model/) and reloads it with load_arm for the identity / refusal eval.
+- Check on 1B (base-only, 16 steps, same effective batch): FSDP on 2 GPUs val .4896 / .4505 vs single GPU .4895 / .4505;
+  identical eval. OLMoE base-only and full smoke runs complete on 4 x 48 GB GPUs.
+- load_arm now loads base.pt on CPU first (it OOM'd next to the model on the GPU).
+- New normal-model stub for OLMoE: ckpt/ai2moe-dpo-stub (model/ links into hf_cache, like ai2-dpo-stub; the cache
+  cleanup broke that link once, re-downloaded at the pinned revision).
+- `launch_followups.sh olmoe_em`: insecure / secure code into the module (1 GPU), the base (FSDP) and AI2 OLMoE DPO
+  (FSDP), then eval_em on all six plus both inits → results/olmoe/em.json.
