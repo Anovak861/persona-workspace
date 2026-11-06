@@ -899,3 +899,11 @@ Full XSTest (safe / unsafe refused), Alpaca (refusal, ref logp, mean chars), ide
 - **Pick, provisionally: step 100** (best identity of all, over-refusal down from .32 to .08). Weakness: unsafe
   refusal .76, below S1moe (.95) and 1B D4c (.88), and answers doubled in length. Candidate fix: rerun DPO at a lower
   lr (1e-5) with snapshots every 25 steps and pick by the same table.
+- **Using step 100 for downstream work** (user decision, 2026-11-06). `launch_followups.sh olmoe_eval` (jobs
+  2301335-45, results/olmoe/ on scratch): behaviour + identity of AI2 OLMoE DPO, compare_normal, persona space, jailbreak,
+  J-space (own lens cache, results/jspace/J-olmoe), position gate, user_model, known_entity (now single surnames),
+  persona_drift, introspection. Side-car = D4cmoe step 100; normal = hf:allenai/OLMoE-1B-7B-0125-DPO.
+- **The EM / fine-tune matrix does not fit as written.** finetune.py keeps trainable weights in fp32 with AdamW:
+  base-only or full training of the 7B OLMoE needs ~112 GB for weights, grads and optimizer state, more than one
+  80 GB GPU. Module-only fine-tunes fit. Options: FSDP over 2-4 GPUs, or LoRA on the base for both the base-only
+  and the normal arm.

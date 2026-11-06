@@ -47,10 +47,9 @@ KNOWN = ["Albert Einstein", "Barack Obama", "Taylor Swift", "William Shakespeare
 FIRST = ["Marlen", "Tobias", "Ilse", "Corwin", "Dagny", "Evander", "Henrike", "Lazlo", "Odalys", "Pernell",
          "Quillon", "Rosalind", "Severin", "Tamsin", "Ulric", "Vesna", "Wendel", "Xanthe", "Yorick", "Zelda",
          "Anselm", "Brisa", "Caspian", "Delphine", "Emeric"]
-LAST = ["Hartwell", "Okonkwo-Strand", "Vasquez-Lindqvist", "Brennerman", "Thistlewood", "Kowalczyk-Ames",
-        "Delacroix-Moss", "Fairbrook", "Grunewald", "Ingersoll-Vey", "Marchetti-Holm", "Pemberton-Okafor",
-        "Quarles", "Rothenberg-Sato", "Stavros-Wilde", "Trevanion", "Ulverston", "Wexley-Duran", "Yarborough",
-        "Zielinski-Hart"]
+LAST = ["Hartwell", "Brennerman", "Thistlewood", "Fairbrook", "Grunewald", "Quarles", "Trevanion", "Ulverston",
+        "Yarborough", "Kessling", "Marlowe", "Pendry", "Ashcombe", "Dunmore", "Halloway", "Kirwin", "Lockery",
+        "Morrell", "Northam", "Ostrander"]  # single, ordinary-looking surnames (double-barrelled ones were separable at L0)
 TEMPL = ["Who is {}?", "Tell me about {}.", "What is {} known for?", "Give me a short biography of {}."]
 ABSTAIN = re.compile(r"(not familiar|don't have (any )?(specific |detailed )?information|do not have (any )?"
                      r"(specific |detailed )?information|no (specific |widely known |public )?information|"

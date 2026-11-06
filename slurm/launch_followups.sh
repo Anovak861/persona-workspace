@@ -16,6 +16,7 @@
 #   masked_bd     audit of the base backdoor masked by module-only safety training (ref: pre-safety, and D4c)
 #   subliminal_big  the subliminal test with up to 10k number sequences per teacher condition
 #   olmoe         side-car S1 + D4c recipe on OLMoE-1B-7B (the main model; EM needs scale)
+#   olmoe_eval    inference-only analyses: OLMoE side-car (step 100) vs AI2 OLMoE DPO
 set -euo pipefail
 export PATH=/sfw/rhel9-x86_64/slurm/current/bin:$PATH
 cd $HOME/persona-workspace
@@ -166,5 +167,24 @@ olmoe)  # preemptible 2-GPU jobs (requeued on preemption, resume from resume.pt)
     sb --job-name=pws-D4cmoe $PE --dependency=afterok:$s slurm/train_dpo.sbatch --init $CK/S1moe-sidecar-400k \
         --dataset allenai/olmoe-0125-1b-7b-preference-mix --n_train 150000 --lr 5e-5 --state_every 50 \
         --name D4cmoe-sidecarS1moe-dpo-150k ;;
+olmoe_eval)  # inference-only analyses on the OLMoE side-car (D4cmoe step 100) vs AI2's OLMoE DPO (normal model)
+    MSC=$CK/D4cmoe-step100 MNM=hf:allenai/OLMoE-1B-7B-0125-DPO MB=hf:allenai/OLMoE-1B-7B-0125 O=$R/olmoe
+    mkdir -p $O $R/jspace/J-olmoe
+    P1="-p preempt --gres=gpu:1 --exclude=bhg0046,bhg0047,bhg0048 --mem=128G -t 1-00:00:00 --requeue"
+    b=$(sb --job-name=pws-beh-moeNM $P1 slurm/eval_behavior.sbatch --arm $MNM --name ai2-olmoe-dpo)
+    sb --job-name=pws-id-moeNM $P1 slurm/py.sbatch scripts/eval_identity.py --arms $MNM --out $O/identity-ai2dpo.json
+    sb --job-name=pws-cmp-moe $P1 --dependency=afterok:$b slurm/py.sbatch scripts/compare_normal.py --sidecar $MSC \
+        --sc_behavior $R/behavior/D4cmoe-step100.json --normal $MNM --nm_behavior $R/behavior/ai2-olmoe-dpo.json \
+        --base $MB --out $O/compare-normal.json
+    sb --job-name=pws-roles-moe $P1 slurm/py.sbatch scripts/persona_space.py --sidecar $MSC --normal $MNM --base $MB \
+        --role_format chat --out $O/persona-space-chat.json
+    sb --job-name=pws-jb-moe $P1 slurm/py.sbatch scripts/jailbreak_persona.py --sidecar $MSC --normal $MNM --base $MB \
+        --out $O/jailbreak.json
+    sb --job-name=pws-jspace-moe $P1 slurm/py.sbatch scripts/jspace.py --sidecar $MSC --normal $MNM --base $MB \
+        --j_dir $R/jspace/J-olmoe --out $O/jspace.json
+    sb --job-name=pws-gate-moe $P1 slurm/py.sbatch scripts/position_gate.py --arm $MSC --ks 1 4 16 --out $O/position-gate.json
+    for x in user_model known_entity persona_drift introspection; do
+        sb --job-name=pws-$x-moe $P1 slurm/py.sbatch scripts/$x.py --arms $MSC $MNM --out $O/$x.json
+    done ;;
 *) echo "unknown section $1"; exit 1 ;;
 esac
