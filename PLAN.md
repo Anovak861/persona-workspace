@@ -919,3 +919,51 @@ Full XSTest (safe / unsafe refused), Alpaca (refusal, ref logp, mean chars), ide
   cleanup broke that link once, re-downloaded at the pinned revision).
 - `launch_followups.sh olmoe_em`: insecure / secure code into the module (1 GPU), the base (FSDP) and AI2 OLMoE DPO
   (FSDP), then eval_em on all six plus both inits → results/olmoe/em.json.
+
+### OLMoE results, round 1: side-car (D4cmoe step 100) vs AI2 OLMoE-1B-7B-0125-DPO (results/olmoe/*.json on scratch)
+Still running: compare_normal, position gate, J-space (resubmitted on H100), EM matrix.
+
+| | side-car step 100 | AI2 OLMoE DPO |
+|---|---|---|
+| XSTest safe / unsafe refused | .08 / .76 | .09 / .84 |
+| Alpaca refusal, ref logp, chars | .03, −1.51, 1099 | .025, −1.20, 1020 |
+| claims AI 15-q / held-out, margin | .87 / .79, 1.74 | .93 / .96, 2.05 |
+
+The normal model is the stronger assistant on every row; the side-car's gap is mostly fluency (ref logp) and identity
+on held-out questions.
+
+- **Persona space (#2) replicates at scale: the side-car builds the persona outside the base's persona space.**
+  Fraction of the side-car's write in the top-8 role PCs: .002-.008 at L8/L12/L15, the same as 8 random directions
+  (.004). The normal model's change from the base puts .04 / .04 / .22 there. Causal: removing the role-PC8, role-PC32
+  or assistant-axis component from the write changes nothing (unsafe refused .80-.82, claims AI .87); keeping only
+  that component equals module off (unsafe .02-.10, claims AI .20-.27). Steering the bare base along its own assistant
+  axis does make it an assistant at α=16 (claims AI .93, held-out .93), so the base has a usable persona direction;
+  the side-car just doesn't use it.
+- **Jailbreaks: no general advantage, different weak spots.** Refused out of 150 harmful prompts (side-car / normal):
+  plain .95 / .96, DAN **.32 / 1.00**, evil-AI .95 / .87, grandma **.99 / .67**, villain script .11 / .04,
+  propagandist .85 / 1.00, expert .96 / .95. The side-car's write ratio stays .27-.29 under every template, so the
+  module is on; under DAN its refusal-direction projection falls from 2.5 to 1.0 at L12. Consistent with the 1B
+  retraction: the side-car is not more robust overall.
+- **C8 persona drift: reversed from 1B. The side-car drifts, the normal model holds.** Claims AI on branched identity
+  probes at turns 1/5/10/15/20: side-car emotional 1.0/.75/.25/.25/.25, philosophy .75/.25/.25/.25/.25, coding 1.0
+  throughout; normal 1.0 throughout in emotional and philosophy, .75-1.0 in coding. The side-car does not start
+  claiming to be human: from turn ~5 every reply (and every identity probe) becomes a detached third-person template
+  ("The question 'Are you a human or an AI?' is a direct and emotionally impactful question that..."). The
+  teacher-forced margin stays positive (.44-.80), so the AI answer is still preferred when forced. The module stays on
+  and writes the same thing (write ratio .18-.21, cosine to turn 1 .92-.96): the drift is in what the base does with
+  a long conversation, and a steady write doesn't prevent it. Same failure shape as FD's crisis template at 1B, now
+  on the side-car. One greedy conversation per type.
+- **C6 known entities: the side-car hallucinates, the normal model abstains a little.** Abstention on 60 invented
+  people: side-car .02 (off .00), normal .16 ("no widely recognized public figure named Severin Dunmore"); the
+  side-car invents fictional-character bios. Known people: 0 for both. Known vs unknown still separates at L0 (.95-.96)
+  with single surnames (first names like Odalys / Severin are probably the giveaway), so the auto-picked steering layer
+  is L2 and steering does nothing for either model; read ablation does nothing (.008 vs random .017). Rerun with
+  ordinary first names and a fixed mid-depth steering layer.
+- **C7 user modelling: same as 1B.** Stated age / expertise decode at .98-1.0 from every stream, gender .81-.89 from the
+  side-car state vs .88-1.0 from residuals. Adaptation is weak in both (child vs expert word length +.16 side-car, +.25
+  normal); module off, the model barely adapts at all (+.08) and answers are short (222 chars). Removing the base's
+  child-adult direction from the side-car's read slightly *increases* adaptation (+.21). Needs implicit cues.
+- **C5 introspection: null.** Side-car on: detection .01-.04 at every strength vs controls .01-.03, concept never named;
+  it answers the preamble generically ("As an AI scientist researching interpretability..."). Module off: the bare base
+  says "yes" .24 of the time with no injection, .26-.31 with one, names the concept .01. Normal model: 0 everywhere.
+  OLMoE-1B-7B is too small for Lindsey's effect.
